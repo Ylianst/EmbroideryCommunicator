@@ -247,6 +247,10 @@ jobs:
         with:
           channel: stable
 
+      # The libserialport CocoaPod builds from source and needs autotools.
+      - name: Install macOS build dependencies
+        run: brew install automake libtool
+
       - name: Install dependencies
         working-directory: src
         run: flutter pub get
