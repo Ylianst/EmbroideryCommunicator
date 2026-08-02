@@ -4,7 +4,13 @@
 
 In the late 90's Bernina released the Artista 180 embroidery machine. At the time it costs 3000 to 4000 US dollars and is still available today second hand for 800$ and up. This robust machines can be connected to a PC via a serial port (RS232) and Bernina provided at the time Windows application to upload embroidery patterns. Sadly, the software of the time only works with Windows XP and so this open source tool was created to fill the gap. If your curious how I built this software, [read the history](https://github.com/Ylianst/EmbroideryCommunicator/blob/main/docs/History.md).
 
-**Download: [Windows x64 Zip File, Version 0.3](https://github.com/Ylianst/EmbroideryCommunicator/raw/refs/heads/main/releases/EmbroideryCommunicator-0.3.zip)**
+## Download
+
+Get the latest desktop builds from the [Releases page](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest):
+
+- **Windows (x64)** — [`EmbroideryCommunicator-<version>-windows-x64.zip`](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest)
+- **macOS** — [`EmbroideryCommunicator-<version>-macos.dmg`](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest)
+- **Linux (x64)** — [`.tar.gz`, `.deb`, or `.AppImage`](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest)
 
 ## Features
 
@@ -25,7 +31,7 @@ So far, this software has only been tested on my own machine:
 ## Getting Started
 
 - Get yourself a USB-to-Serial DB9 adapter, they cost 9 to 15$ US online.
-- Download the [software .zip file](https://github.com/Ylianst/EmbroideryCommunicator/raw/refs/heads/main/releases/EmbroideryCommunicator-0.2.zip), extract and run.
+- Download the software for your platform from the [latest release](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest), extract and run.
 - If you connect the USB-to-Serial cable while the software is running, it will auto-detect the new serial port.
 - Hit "Connect" to connect to the embroidery machine.
 - You should see the machine information appear and existing patterns in the embroidery module and PC card.

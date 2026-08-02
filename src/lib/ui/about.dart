@@ -12,7 +12,7 @@ Future<void> showAppAbout(BuildContext context) async {
     context: context,
     applicationName: 'Embroidery Communicator',
     applicationVersion: 'Version ${info.version} (build ${info.buildNumber})',
-    applicationIcon: const Icon(Icons.memory, size: 48),
+    applicationIcon: Image.asset('assets/images/app_icon.png', width: 64, height: 64),
     applicationLegalese: '© 2025 Ylian Saint-Hilaire · Apache License 2.0',
     children: [
       const SizedBox(height: 12),

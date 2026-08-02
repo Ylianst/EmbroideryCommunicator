@@ -1,0 +1,349 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Windows (x64) desktop build
+  # ---------------------------------------------------------------------------
+  build-windows:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build_number: ${{ steps.version.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v', ''
+          $version = $tag
+          # Use build number from pubspec.yaml
+          $pubspec = Get-Content src/pubspec.yaml -Raw
+          if ($pubspec -match 'version:\s*[\d.]+\+(\d+)') {
+            $buildNumber = $Matches[1]
+          } else {
+            $buildNumber = "1"
+          }
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "build_number=$buildNumber" >> $env:GITHUB_OUTPUT
+          echo "Version: $version, Build: $buildNumber"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        working-directory: src
+        run: flutter pub get
+
+      - name: Build Windows
+        working-directory: src
+        run: flutter build windows --release
+
+      # --- Code signing (disabled for now) -----------------------------------
+      # - name: Sign Windows executable
+      #   uses: azure/trusted-signing-action@v0.4.0
+      #   with:
+      #     azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      #     azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+      #     azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+      #     endpoint: ${{ secrets.AZURE_ENDPOINT }}
+      #     trusted-signing-account-name: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+      #     certificate-profile-name: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
+      #     files-folder: src\build\windows\x64\runner\Release
+      #     files-folder-filter: exe
+      #     file-digest: SHA256
+      #     timestamp-rfc3161: http://timestamp.acs.microsoft.com
+      #     timestamp-digest: SHA256
+
+      - name: Package Windows zip
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $buildDir = "src\build\windows\x64\runner\Release"
+          $zipName = "EmbroideryCommunicator-$version-windows-x64.zip"
+          Compress-Archive -Path "$buildDir\*" -DestinationPath $zipName -Force
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: EmbroideryCommunicator-*-windows-x64.zip
+
+  # ---------------------------------------------------------------------------
+  # Linux (x64) desktop build
+  # ---------------------------------------------------------------------------
+  build-linux:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build_number: ${{ steps.version.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BUILD_NUMBER=$(grep '^version:' src/pubspec.yaml | sed 's/.*+//')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION, Build: $BUILD_NUMBER"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev liblzma-dev libstdc++-12-dev pkg-config cmake clang libserialport-dev
+
+      - name: Install dependencies
+        working-directory: src
+        run: flutter pub get
+
+      - name: Build Linux
+        working-directory: src
+        run: flutter build linux --release
+
+      - name: Package tar.gz
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cd src/build/linux/x64/release/bundle
+          tar -czf "$GITHUB_WORKSPACE/EmbroideryCommunicator-$VERSION-linux-x64.tar.gz" .
+
+      - name: Package .deb
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PKG_DIR="ec-deb"
+          mkdir -p "$PKG_DIR/DEBIAN"
+          mkdir -p "$PKG_DIR/usr/lib/embroidery_communicator"
+          mkdir -p "$PKG_DIR/usr/bin"
+          mkdir -p "$PKG_DIR/usr/share/applications"
+          mkdir -p "$PKG_DIR/usr/share/icons/hicolor/256x256/apps"
+
+          cp -r src/build/linux/x64/release/bundle/* "$PKG_DIR/usr/lib/embroidery_communicator/"
+          ln -sf /usr/lib/embroidery_communicator/embroidery_communicator "$PKG_DIR/usr/bin/embroidery_communicator"
+
+          cat > "$PKG_DIR/usr/share/applications/embroidery_communicator.desktop" <<EOF
+          [Desktop Entry]
+          Name=Embroidery Communicator
+          Comment=Communicate with Bernina Artista embroidery machines over serial or network
+          Exec=/usr/bin/embroidery_communicator
+          Icon=embroidery_communicator
+          Type=Application
+          Categories=Utility;
+          Terminal=false
+          EOF
+          sed -i 's/^          //' "$PKG_DIR/usr/share/applications/embroidery_communicator.desktop"
+
+          cp src/macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_256.png \
+            "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/embroidery_communicator.png"
+
+          cat > "$PKG_DIR/DEBIAN/control" <<EOF
+          Package: embroidery-communicator
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Depends: libgtk-3-0, libserialport0
+          Maintainer: Embroidery Communicator <embroiderycommunicator@users.noreply.github.com>
+          Description: Embroidery Communicator
+           Cross-platform tool to communicate with Bernina Artista embroidery
+           machines over serial or network.
+          EOF
+          sed -i 's/^          //' "$PKG_DIR/DEBIAN/control"
+
+          dpkg-deb --build "$PKG_DIR" "EmbroideryCommunicator-$VERSION-linux-x64.deb"
+
+      - name: Package AppImage
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          APPDIR="EmbroideryCommunicator.AppDir"
+
+          mkdir -p "$APPDIR/usr/bin"
+          mkdir -p "$APPDIR/usr/share/applications"
+          mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+
+          # Copy build output
+          cp -r src/build/linux/x64/release/bundle/* "$APPDIR/usr/bin/"
+
+          # Desktop file
+          cat > "$APPDIR/embroidery_communicator.desktop" <<EOF
+          [Desktop Entry]
+          Name=Embroidery Communicator
+          Comment=Communicate with Bernina Artista embroidery machines over serial or network
+          Exec=embroidery_communicator
+          Icon=embroidery_communicator
+          Type=Application
+          Categories=Utility;
+          Terminal=false
+          EOF
+          sed -i 's/^          //' "$APPDIR/embroidery_communicator.desktop"
+          cp "$APPDIR/embroidery_communicator.desktop" "$APPDIR/usr/share/applications/embroidery_communicator.desktop"
+
+          # Icon
+          cp src/macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_256.png "$APPDIR/embroidery_communicator.png"
+          cp src/macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_256.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/embroidery_communicator.png"
+
+          # AppRun script
+          cat > "$APPDIR/AppRun" <<'EOF'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          export PATH="${HERE}/usr/bin:${PATH}"
+          export LD_LIBRARY_PATH="${HERE}/usr/bin/lib:${HERE}/usr/lib:${LD_LIBRARY_PATH}"
+          exec "${HERE}/usr/bin/embroidery_communicator" "$@"
+          EOF
+          sed -i 's/^          //' "$APPDIR/AppRun"
+          chmod +x "$APPDIR/AppRun"
+
+          # Download appimagetool
+          wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" -O appimagetool
+          chmod +x appimagetool
+
+          # Build AppImage
+          ARCH=x86_64 ./appimagetool --no-appstream "$APPDIR" "EmbroideryCommunicator-$VERSION-linux-x64.AppImage"
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: |
+            EmbroideryCommunicator-*-linux-x64.tar.gz
+            EmbroideryCommunicator-*-linux-x64.deb
+            EmbroideryCommunicator-*-linux-x64.AppImage
+
+  # ---------------------------------------------------------------------------
+  # macOS desktop build
+  # ---------------------------------------------------------------------------
+  build-macos:
+    runs-on: macos-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build_number: ${{ steps.version.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BUILD_NUMBER=$(grep '^version:' src/pubspec.yaml | sed 's/.*+//')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION, Build: $BUILD_NUMBER"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        working-directory: src
+        run: flutter pub get
+
+      - name: Build macOS (unsigned)
+        working-directory: src
+        run: |
+          # CI can't use Xcode automatic signing (no "Mac Development" cert),
+          # so build unsigned here. Developer ID signing / notarization is
+          # disabled for now (see commented-out steps below).
+          {
+            echo 'CODE_SIGN_IDENTITY='
+            echo 'CODE_SIGNING_REQUIRED=NO'
+            echo 'CODE_SIGNING_ALLOWED=NO'
+          } >> macos/Runner/Configs/Release.xcconfig
+          flutter build macos --release
+
+      # --- Code signing / notarization (disabled for now) --------------------
+      # - name: Import Developer ID certificate
+      #   env:
+      #     MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+      #     MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      #     MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+      #   run: |
+      #     CERT_PATH="$RUNNER_TEMP/certificate.p12"
+      #     KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+      #     echo -n "$MACOS_CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+      #     security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+      #     security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+      #     security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+      #     security import "$CERT_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+      #     security set-key-partition-list -S apple-tool:,apple: -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+      #     security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain
+      #
+      # - name: Sign and notarize app
+      #   env:
+      #     MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+      #     MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
+      #     MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+      #     MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+      #   run: |
+      #     APP_PATH=$(find src/build/macos/Build/Products/Release -name "*.app" -maxdepth 1 | head -1)
+      #     find "$APP_PATH/Contents/Frameworks" -type f \( -name "*.dylib" -o -name "*.so" \) -exec \
+      #       codesign --force --timestamp --options runtime --sign "$MACOS_SIGNING_IDENTITY" {} +
+      #     find "$APP_PATH/Contents/Frameworks" -type d -name "*.framework" -exec \
+      #       codesign --force --timestamp --options runtime --sign "$MACOS_SIGNING_IDENTITY" {} +
+      #     codesign --force --timestamp --options runtime \
+      #       --entitlements src/macos/Runner/Release.entitlements \
+      #       --sign "$MACOS_SIGNING_IDENTITY" "$APP_PATH"
+      #     NOTARY_KEY="$RUNNER_TEMP/notary_key.p8"
+      #     echo -n "$MACOS_NOTARY_KEY_BASE64" | base64 --decode -o "$NOTARY_KEY"
+      #     ditto -c -k --keepParent "$APP_PATH" "$RUNNER_TEMP/notarize.zip"
+      #     xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+      #       --key "$NOTARY_KEY" --key-id "$MACOS_NOTARY_KEY_ID" --issuer "$MACOS_NOTARY_ISSUER_ID" --wait
+      #     xcrun stapler staple "$APP_PATH"
+
+      - name: Create DMG
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          APP_PATH=$(find src/build/macos/Build/Products/Release -name "*.app" -maxdepth 1 | head -1)
+          DMG_NAME="EmbroideryCommunicator-$VERSION-macos.dmg"
+          VOLUME_NAME="Embroidery Communicator"
+          STAGING_DIR="dmg_staging"
+
+          echo "Found app: $APP_PATH"
+          mkdir -p "$STAGING_DIR"
+          cp -R "$APP_PATH" "$STAGING_DIR/"
+          ln -s /Applications "$STAGING_DIR/Applications"
+
+          hdiutil create -volname "$VOLUME_NAME" -srcfolder "$STAGING_DIR" -ov -format UDZO -imagekey zlib-level=9 -o "$DMG_NAME"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: EmbroideryCommunicator-*-macos.dmg
+
+  # ---------------------------------------------------------------------------
+  # Publish GitHub Release with all desktop artifacts
+  # ---------------------------------------------------------------------------
+  release:
+    needs: [build-windows, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Embroidery Communicator ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            artifacts/windows-x64/EmbroideryCommunicator-*-windows-x64.zip
+            artifacts/linux-x64/EmbroideryCommunicator-*-linux-x64.tar.gz
+            artifacts/linux-x64/EmbroideryCommunicator-*-linux-x64.deb
+            artifacts/linux-x64/EmbroideryCommunicator-*-linux-x64.AppImage
+            artifacts/macos/EmbroideryCommunicator-*-macos.dmg

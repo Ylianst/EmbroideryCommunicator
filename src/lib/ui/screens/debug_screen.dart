@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -44,6 +47,46 @@ class _DebugScreenState extends ConsumerState<DebugScreen> {
     super.dispose();
   }
 
+  static String _formatTime(DateTime t) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(t.hour)}:${two(t.minute)}:${two(t.second)}.'
+        '${t.millisecond.toString().padLeft(3, '0')}';
+  }
+
+  /// Renders the whole traffic log as a single block of monospace text.
+  String _buildLogText(List<TrafficEvent> events) {
+    final sb = StringBuffer();
+    for (final e in events) {
+      sb.writeln(
+        '${_formatTime(e.time)}  ${e.sent ? 'TX' : 'RX'}  '
+        '${HexFormat.hex(e.data)}   ${HexFormat.ascii(e.data)}',
+      );
+    }
+    return sb.toString();
+  }
+
+  Future<void> _saveLog(List<TrafficEvent> events) async {
+    final text = _buildLogText(events);
+    final location = await getSaveLocation(
+      suggestedName: 'embroidery-debug-log.txt',
+      acceptedTypeGroups: const [
+        XTypeGroup(label: 'Text', extensions: ['txt']),
+      ],
+    );
+    if (location == null) return;
+    final bytes = Uint8List.fromList(utf8.encode(text));
+    await XFile.fromData(
+      bytes,
+      name: 'embroidery-debug-log.txt',
+      mimeType: 'text/plain',
+    ).saveTo(location.path);
+    if (mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Debug log saved')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final log = ref.read(trafficLogProvider);
@@ -58,6 +101,11 @@ class _DebugScreenState extends ConsumerState<DebugScreen> {
             onPressed: () => setState(() => _autoScroll = !_autoScroll),
           ),
           IconButton(
+            tooltip: 'Save As...',
+            icon: const Icon(Icons.save_alt),
+            onPressed: events.isEmpty ? null : () => _saveLog(events),
+          ),
+          IconButton(
             tooltip: 'Clear',
             icon: const Icon(Icons.delete_sweep),
             onPressed: () => setState(log.clear),
@@ -66,44 +114,23 @@ class _DebugScreenState extends ConsumerState<DebugScreen> {
       ),
       body: events.isEmpty
           ? const Center(child: Text('No traffic yet'))
-          : ListView.builder(
+          : Scrollbar(
               controller: _scroll,
-              itemCount: events.length,
-              itemBuilder: (context, i) {
-                final e = events[i];
-                final t =
-                    '${e.time.hour.toString().padLeft(2, '0')}:${e.time.minute.toString().padLeft(2, '0')}:${e.time.second.toString().padLeft(2, '0')}.${e.time.millisecond.toString().padLeft(3, '0')}';
-                return Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        width: 96,
-                        child: Text(t,
-                            style: const TextStyle(
-                                fontFeatures: [FontFeature.tabularFigures()],
-                                color: Colors.grey,
-                                fontSize: 12)),
-                      ),
-                      Icon(
-                        e.sent ? Icons.north_east : Icons.south_west,
-                        size: 14,
-                        color: e.sent ? Colors.orange : Colors.green,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: SelectableText(
-                          '${HexFormat.hex(e.data)}   ${HexFormat.ascii(e.data)}',
-                          style: const TextStyle(
-                              fontFamily: 'monospace', fontSize: 12),
-                        ),
-                      ),
-                    ],
+              thumbVisibility: true,
+              child: SingleChildScrollView(
+                controller: _scroll,
+                padding: const EdgeInsets.all(12),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: SelectableText(
+                    _buildLogText(events),
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                    ),
                   ),
-                );
-              },
+                ),
+              ),
             ),
     );
   }
