@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Embroidery Communicator</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #1e1e1e;
+      color: #eaeaea;
+      display: flex;
+      min-height: 100vh;
+      align-items: center;
+      justify-content: center;
+    }
+    .card {
+      max-width: 640px;
+      padding: 40px 32px;
+      text-align: center;
+    }
+    h1 { font-size: 2rem; margin: 0 0 8px; }
+    p.tagline { color: #b0b0b0; margin: 0 0 28px; }
+    a.button {
+      display: inline-block;
+      background: #5c6bc0;
+      color: #fff;
+      text-decoration: none;
+      padding: 14px 28px;
+      border-radius: 8px;
+      font-size: 1.1rem;
+      font-weight: 600;
+    }
+    a.button:hover { background: #7986cb; }
+    .links { margin-top: 28px; font-size: 0.95rem; }
+    .links a { color: #90caf9; text-decoration: none; margin: 0 10px; }
+    .links a:hover { text-decoration: underline; }
+    .note { margin-top: 24px; color: #888; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Embroidery Communicator</h1>
+    <p class="tagline">
+      Communicate with Bernina Artista embroidery machines over serial or network.
+    </p>
+    <a class="button" href="app/">Launch the Web App</a>
+    <div class="links">
+      <a href="https://github.com/Ylianst/EmbroideryCommunicator">Project on GitHub</a>
+      <a href="https://github.com/Ylianst/EmbroideryCommunicator/releases/latest">Download desktop apps</a>
+    </div>
+    <p class="note">
+      The web version requires a browser with Web Serial support (Chrome or Edge)
+      to connect to a machine over a USB-to-serial adapter.
+    </p>
+  </main>
+</body>
+</html>

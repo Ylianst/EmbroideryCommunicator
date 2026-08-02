@@ -79,10 +79,21 @@ jobs:
           path: EmbroideryCommunicator-*-windows-x64.zip
 
   # ---------------------------------------------------------------------------
-  # Linux (x64) desktop build
+  # Linux (x64 + arm64) desktop build
   # ---------------------------------------------------------------------------
   build-linux:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+            deb_arch: amd64
+            appimagetool_arch: x86_64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            deb_arch: arm64
+            appimagetool_arch: aarch64
     outputs:
       version: ${{ steps.version.outputs.version }}
       build_number: ${{ steps.version.outputs.build_number }}
@@ -98,9 +109,23 @@ jobs:
           echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
           echo "Version: $VERSION, Build: $BUILD_NUMBER"
 
-      - uses: subosito/flutter-action@v2
+      # Flutter publishes prebuilt SDK archives for x64 only, so the marketplace
+      # action works for x64 but fails on arm64. On arm64 we install from git,
+      # whose bootstrap downloads the correct arm64 Dart SDK and engine.
+      - name: Set up Flutter (x64)
+        if: matrix.arch == 'x64'
+        uses: subosito/flutter-action@v2
         with:
           channel: stable
+
+      - name: Set up Flutter (arm64)
+        if: matrix.arch == 'arm64'
+        run: |
+          git clone https://github.com/flutter/flutter.git --depth 1 --branch stable "$HOME/flutter"
+          git config --global --add safe.directory "$HOME/flutter"
+          echo "$HOME/flutter/bin" >> "$GITHUB_PATH"
+          "$HOME/flutter/bin/flutter" --version
+          "$HOME/flutter/bin/flutter" precache --linux
 
       - name: Install Linux dependencies
         run: |
@@ -118,8 +143,8 @@ jobs:
       - name: Package tar.gz
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          cd src/build/linux/x64/release/bundle
-          tar -czf "$GITHUB_WORKSPACE/EmbroideryCommunicator-$VERSION-linux-x64.tar.gz" .
+          cd src/build/linux/${{ matrix.arch }}/release/bundle
+          tar -czf "$GITHUB_WORKSPACE/EmbroideryCommunicator-$VERSION-linux-${{ matrix.arch }}.tar.gz" .
 
       - name: Package .deb
         run: |
@@ -131,7 +156,7 @@ jobs:
           mkdir -p "$PKG_DIR/usr/share/applications"
           mkdir -p "$PKG_DIR/usr/share/icons/hicolor/256x256/apps"
 
-          cp -r src/build/linux/x64/release/bundle/* "$PKG_DIR/usr/lib/embroidery_communicator/"
+          cp -r src/build/linux/${{ matrix.arch }}/release/bundle/* "$PKG_DIR/usr/lib/embroidery_communicator/"
           ln -sf /usr/lib/embroidery_communicator/embroidery_communicator "$PKG_DIR/usr/bin/embroidery_communicator"
 
           cat > "$PKG_DIR/usr/share/applications/embroidery_communicator.desktop" <<EOF
@@ -154,7 +179,7 @@ jobs:
           Version: ${VERSION}
           Section: utils
           Priority: optional
-          Architecture: amd64
+          Architecture: ${{ matrix.deb_arch }}
           Depends: libgtk-3-0, libserialport0
           Maintainer: Embroidery Communicator <embroiderycommunicator@users.noreply.github.com>
           Description: Embroidery Communicator
@@ -163,7 +188,7 @@ jobs:
           EOF
           sed -i 's/^          //' "$PKG_DIR/DEBIAN/control"
 
-          dpkg-deb --build "$PKG_DIR" "EmbroideryCommunicator-$VERSION-linux-x64.deb"
+          dpkg-deb --build "$PKG_DIR" "EmbroideryCommunicator-$VERSION-linux-${{ matrix.arch }}.deb"
 
       - name: Package AppImage
         run: |
@@ -175,7 +200,7 @@ jobs:
           mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
           # Copy build output
-          cp -r src/build/linux/x64/release/bundle/* "$APPDIR/usr/bin/"
+          cp -r src/build/linux/${{ matrix.arch }}/release/bundle/* "$APPDIR/usr/bin/"
 
           # Desktop file
           cat > "$APPDIR/embroidery_communicator.desktop" <<EOF
@@ -208,20 +233,20 @@ jobs:
           chmod +x "$APPDIR/AppRun"
 
           # Download appimagetool
-          wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" -O appimagetool
+          wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${{ matrix.appimagetool_arch }}.AppImage" -O appimagetool
           chmod +x appimagetool
 
           # Build AppImage
-          ARCH=x86_64 ./appimagetool --no-appstream "$APPDIR" "EmbroideryCommunicator-$VERSION-linux-x64.AppImage"
+          ARCH=${{ matrix.appimagetool_arch }} ./appimagetool --no-appstream "$APPDIR" "EmbroideryCommunicator-$VERSION-linux-${{ matrix.arch }}.AppImage"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-x64
+          name: linux-${{ matrix.arch }}
           path: |
-            EmbroideryCommunicator-*-linux-x64.tar.gz
-            EmbroideryCommunicator-*-linux-x64.deb
-            EmbroideryCommunicator-*-linux-x64.AppImage
+            EmbroideryCommunicator-*-linux-${{ matrix.arch }}.tar.gz
+            EmbroideryCommunicator-*-linux-${{ matrix.arch }}.deb
+            EmbroideryCommunicator-*-linux-${{ matrix.arch }}.AppImage
 
   # ---------------------------------------------------------------------------
   # macOS desktop build
@@ -350,4 +375,43 @@ jobs:
             artifacts/linux-x64/EmbroideryCommunicator-*-linux-x64.tar.gz
             artifacts/linux-x64/EmbroideryCommunicator-*-linux-x64.deb
             artifacts/linux-x64/EmbroideryCommunicator-*-linux-x64.AppImage
+            artifacts/linux-arm64/EmbroideryCommunicator-*-linux-arm64.tar.gz
+            artifacts/linux-arm64/EmbroideryCommunicator-*-linux-arm64.deb
+            artifacts/linux-arm64/EmbroideryCommunicator-*-linux-arm64.AppImage
             artifacts/macos/EmbroideryCommunicator-*-macos.dmg
+
+  # ---------------------------------------------------------------------------
+  # Build the web version and publish it into docs/app for GitHub Pages.
+  # Only the latest build is kept (the previous one is replaced each release).
+  # ---------------------------------------------------------------------------
+  deploy-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        working-directory: src
+        run: flutter pub get
+
+      - name: Build Web
+        working-directory: src
+        run: flutter build web --release --base-href "/${{ github.event.repository.name }}/app/"
+
+      - name: Publish web build to docs/app
+        run: |
+          # Replace the previous web build so only the latest version is kept.
+          rm -rf docs/app
+          mkdir -p docs/app
+          cp -r src/build/web/* docs/app/
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/app
+          git commit -m "Deploy web build ${{ github.ref_name }}" || echo "No changes to commit"
+          git push origin main
