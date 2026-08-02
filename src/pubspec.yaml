@@ -44,6 +44,7 @@ dependencies:
   web: ^1.1.1
   package_info_plus: ^10.2.1
   url_launcher: ^6.3.2
+  window_manager: ^0.4.3
 
 dev_dependencies:
   flutter_test:

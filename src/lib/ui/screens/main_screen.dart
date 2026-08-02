@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -25,6 +27,22 @@ const _expTypeGroup = XTypeGroup(label: 'Embroidery', extensions: ['exp']);
 
 const _prefNetworkHost = 'network_host';
 const _prefNetworkPort = 'network_port';
+
+/// How the embroidery/PC-card file panels present their files.
+enum FileViewMode { list, tile }
+
+/// Shared file-panel view mode so both storage tabs stay in sync.
+final fileViewModeProvider =
+    NotifierProvider<FileViewModeNotifier, FileViewMode>(
+      FileViewModeNotifier.new,
+    );
+
+class FileViewModeNotifier extends Notifier<FileViewMode> {
+  @override
+  FileViewMode build() => FileViewMode.list;
+
+  void set(FileViewMode mode) => state = mode;
+}
 
 /// Prompts for a relay host/port and connects. The last-used values are
 /// remembered so they are pre-filled the next time the dialog is opened.
@@ -93,6 +111,7 @@ class MainScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final session = ref.watch(machineSessionProvider);
+    final connecting = session.isConnecting;
 
     return AppMenuBar(
       appName: 'Embroidery Communicator',
@@ -111,38 +130,36 @@ class MainScreen extends ConsumerWidget {
             ],
           ),
           actions: [
-            IconButton(
-              tooltip: 'Open a local .EXP file',
-              icon: const Icon(Icons.folder_open),
-              onPressed: () => _openLocalFile(context),
-            ),
-            if (session.isConnected)
-              IconButton(
-                tooltip: 'Refresh',
-                icon: const Icon(Icons.refresh),
-                onPressed: session.busy
-                    ? null
-                    : () => ref.read(machineSessionProvider.notifier).refresh(),
-              ),
-            PopupMenuButton<String>(
-              tooltip: 'Tools',
-              icon: const Icon(Icons.build),
-              onSelected: (value) => _openTool(context, value),
-              itemBuilder: (context) => [
-                const PopupMenuItem(value: 'debug', child: Text('Live debug')),
-                PopupMenuItem(
-                  value: 'memory',
-                  enabled: session.isConnected,
-                  child: const Text('Memory viewer'),
-                ),
-                PopupMenuItem(
-                  value: 'dump',
-                  enabled: session.isConnected,
-                  child: const Text('Memory dump'),
-                ),
-                const PopupMenuDivider(),
-                const PopupMenuItem(value: 'about', child: Text('About')),
-              ],
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              child: session.isConnected
+                  ? OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        side: const BorderSide(color: Colors.white54),
+                      ),
+                      icon: const Icon(Icons.link_off),
+                      label: const Text('Disconnect'),
+                      onPressed: () => ref
+                          .read(machineSessionProvider.notifier)
+                          .disconnect(),
+                    )
+                  : FilledButton.icon(
+                      icon: connecting
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.link),
+                      label: Text(connecting ? 'Connecting\u2026' : 'Connect'),
+                      onPressed: connecting
+                          ? null
+                          : () => showConnectDialog(context, ref),
+                    ),
             ),
           ],
           bottom: session.busy
@@ -152,9 +169,7 @@ class MainScreen extends ConsumerWidget {
                 )
               : null,
         ),
-        body: session.isConnected
-            ? _ConnectedView(session: session)
-            : _DisconnectedView(session: session),
+        body: _ConnectedView(session: session),
       ),
     );
   }
@@ -267,117 +282,119 @@ class MainScreen extends ConsumerWidget {
   }
 }
 
-class _DisconnectedView extends ConsumerWidget {
-  const _DisconnectedView({required this.session});
+/// Shows a dialog offering serial and network connection options. The dialog
+/// closes itself automatically once a connection is established.
+Future<void> showConnectDialog(BuildContext context, WidgetRef ref) async {
+  await showDialog<void>(
+    context: context,
+    builder: (context) => const _ConnectDialog(),
+  );
+}
 
-  final MachineSessionState session;
+class _ConnectDialog extends ConsumerWidget {
+  const _ConnectDialog();
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Close the dialog as soon as a connection is established.
+    ref.listen(machineSessionProvider, (previous, next) {
+      if (next.isConnected && Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+      }
+    });
+
+    final session = ref.watch(machineSessionProvider);
     final portsAsync = ref.watch(availablePortsProvider);
     final selectedPort = ref.watch(selectedPortProvider);
     final connecting = session.isConnecting;
 
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 420),
-        child: Card(
-          margin: const EdgeInsets.all(24),
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Icon(Icons.usb, size: 56),
-                const SizedBox(height: 16),
-                Text(
-                  'Connect to your machine',
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                const SizedBox(height: 16),
-                portsAsync.when(
-                  loading: () => const LinearProgressIndicator(),
-                  error: (e, _) => Text('Error listing ports: $e'),
-                  data: (ports) {
-                    final value = ports.contains(selectedPort)
-                        ? selectedPort
-                        : null;
-                    return DropdownButtonFormField<String>(
-                      initialValue: value,
-                      decoration: const InputDecoration(
-                        labelText: 'Serial port',
-                        border: OutlineInputBorder(),
-                      ),
-                      hint: const Text('Select a port'),
-                      items: [
-                        for (final port in ports)
-                          DropdownMenuItem(value: port, child: Text(port)),
-                      ],
-                      onChanged: (port) =>
-                          ref.read(selectedPortProvider.notifier).select(port),
-                    );
-                  },
-                ),
-                if (kIsWeb) ...[
-                  const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add serial device…'),
-                    onPressed: () async {
-                      final granted = await ref
-                          .read(portDiscoveryProvider)
-                          .requestPort();
-                      if (granted) ref.invalidate(availablePortsProvider);
-                    },
+    return AlertDialog(
+      title: const Text('Connect to machine'),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            portsAsync.when(
+              loading: () => const LinearProgressIndicator(),
+              error: (e, _) => Text('Error listing ports: $e'),
+              data: (ports) {
+                final value = ports.contains(selectedPort)
+                    ? selectedPort
+                    : null;
+                return DropdownButtonFormField<String>(
+                  initialValue: value,
+                  decoration: const InputDecoration(
+                    labelText: 'Serial port',
+                    border: OutlineInputBorder(),
                   ),
-                ],
-                const SizedBox(height: 16),
-                FilledButton.icon(
-                  icon: connecting
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.link),
-                  label: Text(connecting ? 'Connecting…' : 'Connect'),
-                  onPressed: (selectedPort == null || connecting)
-                      ? null
-                      : () => ref
-                            .read(machineSessionProvider.notifier)
-                            .connect(selectedPort),
-                ),
-                const SizedBox(height: 8),
-                TextButton.icon(
-                  icon: const Icon(Icons.lan),
-                  label: const Text('Connect over network…'),
-                  onPressed: connecting
-                      ? null
-                      : () => _showNetworkDialog(context, ref),
-                ),
-                if (session.message != null) ...[
-                  const SizedBox(height: 12),
-                  Text(
-                    session.message!,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: session.isError
-                          ? Theme.of(context).colorScheme.error
-                          : Theme.of(context).hintColor,
-                    ),
-                  ),
-                ],
-              ],
+                  hint: const Text('Select a port'),
+                  items: [
+                    for (final port in ports)
+                      DropdownMenuItem(value: port, child: Text(port)),
+                  ],
+                  onChanged: (port) =>
+                      ref.read(selectedPortProvider.notifier).select(port),
+                );
+              },
             ),
-          ),
+            if (kIsWeb) ...[
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.add),
+                label: const Text('Add serial device…'),
+                onPressed: () async {
+                  final granted = await ref
+                      .read(portDiscoveryProvider)
+                      .requestPort();
+                  if (granted) ref.invalidate(availablePortsProvider);
+                },
+              ),
+            ],
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              icon: connecting
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.link),
+              label: Text(connecting ? 'Connecting…' : 'Connect'),
+              onPressed: (selectedPort == null || connecting)
+                  ? null
+                  : () => ref
+                        .read(machineSessionProvider.notifier)
+                        .connect(selectedPort),
+            ),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              icon: const Icon(Icons.lan),
+              label: const Text('Connect over network…'),
+              onPressed: connecting
+                  ? null
+                  : () => showNetworkConnectDialog(context, ref),
+            ),
+            if (session.message != null && session.isError) ...[
+              const SizedBox(height: 12),
+              Text(
+                session.message!,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
+          ],
         ),
       ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Close'),
+        ),
+      ],
     );
   }
-
-  Future<void> _showNetworkDialog(BuildContext context, WidgetRef ref) =>
-      showNetworkConnectDialog(context, ref);
 }
 
 class _ConnectedView extends ConsumerWidget {
@@ -455,6 +472,10 @@ class _GeneralTab extends StatelessWidget {
 
     return LayoutBuilder(
       builder: (context, constraints) {
+        // Below this width the image is dropped entirely to save space.
+        if (constraints.maxWidth < 480) {
+          return SingleChildScrollView(child: info);
+        }
         if (constraints.maxWidth < 640) {
           return SingleChildScrollView(
             child: Column(
@@ -496,66 +517,132 @@ class _MachineInfoList extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _group(context, 'Sewing Machine'),
-        _row(context, 'Firmware Version', _value(sewing?.version)),
-        _row(context, 'Language', _value(sewing?.language)),
-        _row(context, 'Manufacturer', _value(sewing?.manufacturer)),
-        _row(context, 'Firmware Date', _value(sewing?.date)),
-        _row(
+        _infoGroup(context, 'Sewing Machine'),
+        _infoRow(context, 'Firmware Version', _value(sewing?.version)),
+        _infoRow(context, 'Language', _value(sewing?.language)),
+        _infoRow(context, 'Manufacturer', _value(sewing?.manufacturer)),
+        _infoRow(context, 'Firmware Date', _value(sewing?.date)),
+        _infoRow(
           context,
           'Embroidery Module',
           module != null ? 'Attached' : 'Not Attached',
         ),
         if (module != null) ...[
-          _group(context, 'Embroidery Module'),
-          _row(context, 'Firmware Version', _value(module.version)),
-          _row(context, 'Manufacturer', _value(module.manufacturer)),
-          _row(context, 'Firmware Date', _value(module.date)),
-          _row(
+          _infoGroup(context, 'Embroidery Module'),
+          _infoRow(context, 'Firmware Version', _value(module.version)),
+          _infoRow(context, 'Manufacturer', _value(module.manufacturer)),
+          _infoRow(context, 'Firmware Date', _value(module.date)),
+          _infoRow(
             context,
             'PC Card',
             module.pcCardInserted ? 'Inserted' : 'Not Inserted',
           ),
         ],
+        const _CommunicationSection(),
       ],
     );
   }
+}
 
-  Widget _group(BuildContext context, String title) {
-    return Container(
-      width: double.infinity,
-      color: Theme.of(context).colorScheme.surfaceContainerHighest,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      child: Text(
-        title,
-        style: Theme.of(
-          context,
-        ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+Widget _infoGroup(BuildContext context, String title) {
+  return Container(
+    width: double.infinity,
+    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+    child: Text(
+      title,
+      style: Theme.of(
+        context,
+      ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+    ),
+  );
+}
+
+Widget _infoRow(BuildContext context, String name, String value) {
+  return Container(
+    decoration: BoxDecoration(
+      border: Border(
+        bottom: BorderSide(color: Theme.of(context).dividerColor),
       ),
-    );
+    ),
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 150,
+          child: Text(
+            name,
+            style: const TextStyle(fontWeight: FontWeight.w500),
+          ),
+        ),
+        Expanded(child: Text(value)),
+      ],
+    ),
+  );
+}
+
+/// Live serial/relay statistics. Values are sampled at most once every two
+/// seconds and the UI is only rebuilt when one of them actually changes.
+class _CommunicationSection extends ConsumerStatefulWidget {
+  const _CommunicationSection();
+
+  @override
+  ConsumerState<_CommunicationSection> createState() =>
+      _CommunicationSectionState();
+}
+
+class _CommunicationSectionState extends ConsumerState<_CommunicationSection> {
+  Timer? _timer;
+  int _bytesIn = 0;
+  int _bytesOut = 0;
+  int _framesIn = 0;
+  int _framesOut = 0;
+  int? _baud;
+
+  @override
+  void initState() {
+    super.initState();
+    _sync(initial: true);
+    _timer = Timer.periodic(const Duration(seconds: 2), (_) => _sync());
   }
 
-  Widget _row(BuildContext context, String name, String value) {
-    return Container(
-      decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: Theme.of(context).dividerColor),
-        ),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 150,
-            child: Text(
-              name,
-              style: const TextStyle(fontWeight: FontWeight.w500),
-            ),
-          ),
-          Expanded(child: Text(value)),
-        ],
-      ),
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _sync({bool initial = false}) {
+    final log = ref.read(trafficLogProvider);
+    final baud = ref.read(machineSessionProvider).baudRate;
+    final changed =
+        _bytesIn != log.bytesReceived ||
+        _bytesOut != log.bytesSent ||
+        _framesIn != log.framesReceived ||
+        _framesOut != log.framesSent ||
+        _baud != baud;
+    if (!changed) return;
+    _bytesIn = log.bytesReceived;
+    _bytesOut = log.bytesSent;
+    _framesIn = log.framesReceived;
+    _framesOut = log.framesSent;
+    _baud = baud;
+    if (!initial) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _infoGroup(context, 'Communication'),
+        _infoRow(context, 'Bytes In', '$_bytesIn'),
+        _infoRow(context, 'Bytes Out', '$_bytesOut'),
+        _infoRow(context, 'Frames In', '$_framesIn'),
+        _infoRow(context, 'Frames Out', '$_framesOut'),
+        _infoRow(context, 'Baud Rate', _baud != null ? '$_baud' : 'N/A'),
+      ],
     );
   }
 }
@@ -574,34 +661,64 @@ class _MachineInfoBar extends ConsumerWidget {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         child: Row(
           children: [
-            const Icon(Icons.memory),
+            Icon(session.isConnected ? Icons.memory : Icons.usb_off),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    fw == null
+                    !session.isConnected
+                        ? 'Not connected'
+                        : fw == null
                         ? 'Connected'
                         : '${fw.manufacturer} · ${fw.version}',
                     style: Theme.of(context).textTheme.titleSmall,
                   ),
                   Text(
-                    session.message ?? '',
+                    session.message ??
+                        (session.isConnected
+                            ? ''
+                            : 'Use Connect to link a machine'),
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
               ),
             ),
-            OutlinedButton.icon(
-              icon: const Icon(Icons.link_off),
-              label: const Text('Disconnect'),
-              onPressed: () =>
-                  ref.read(machineSessionProvider.notifier).disconnect(),
-            ),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _ViewModeToggle extends StatelessWidget {
+  const _ViewModeToggle({required this.mode, required this.onChanged});
+
+  final FileViewMode mode;
+  final ValueChanged<FileViewMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final active = Theme.of(context).colorScheme.primary;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          tooltip: 'List view',
+          icon: const Icon(Icons.view_list),
+          isSelected: mode == FileViewMode.list,
+          color: mode == FileViewMode.list ? active : null,
+          onPressed: () => onChanged(FileViewMode.list),
+        ),
+        IconButton(
+          tooltip: 'Tile view',
+          icon: const Icon(Icons.grid_view),
+          isSelected: mode == FileViewMode.tile,
+          color: mode == FileViewMode.tile ? active : null,
+          onPressed: () => onChanged(FileViewMode.tile),
+        ),
+      ],
     );
   }
 }
@@ -614,7 +731,6 @@ class _FilePanel extends ConsumerWidget {
     required this.enabled,
     this.emptyMessage = 'No files',
   });
-
   final String title;
   final StorageLocation location;
   final List<EmbroideryFile> files;
@@ -623,6 +739,7 @@ class _FilePanel extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final viewMode = ref.watch(fileViewModeProvider);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -635,6 +752,11 @@ class _FilePanel extends ConsumerWidget {
                   '$title (${files.length})',
                   style: Theme.of(context).textTheme.titleSmall,
                 ),
+              ),
+              _ViewModeToggle(
+                mode: viewMode,
+                onChanged: (m) =>
+                    ref.read(fileViewModeProvider.notifier).set(m),
               ),
               TextButton.icon(
                 icon: const Icon(Icons.upload_file, size: 18),
@@ -650,6 +772,23 @@ class _FilePanel extends ConsumerWidget {
                   child: Text(
                     emptyMessage,
                     style: TextStyle(color: Theme.of(context).hintColor),
+                  ),
+                )
+              : viewMode == FileViewMode.tile
+              ? GridView.builder(
+                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                  gridDelegate:
+                      const SliverGridDelegateWithMaxCrossAxisExtent(
+                        maxCrossAxisExtent: 170,
+                        mainAxisExtent: 160,
+                        crossAxisSpacing: 8,
+                        mainAxisSpacing: 8,
+                      ),
+                  itemCount: files.length,
+                  itemBuilder: (context, i) => EmbroideryFileCard(
+                    file: files[i],
+                    onAction: (action) =>
+                        _handleAction(context, ref, action, files[i]),
                   ),
                 )
               : ListView.builder(

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:isolate';
 
 import 'package:flutter_libserialport/flutter_libserialport.dart';
 
@@ -7,28 +8,48 @@ import 'port_discovery_base.dart';
 /// Desktop serial port discovery backed by `flutter_libserialport`.
 ///
 /// Hot-plug detection is done by polling [SerialPort.availablePorts] and
-/// diffing the result, which is cheap and works identically on Windows, macOS
-/// and Linux (unlike the Windows-only WMI approach in the legacy app).
+/// diffing the result. Enumeration runs on a background isolate because on
+/// Windows the native call can block for several seconds (e.g. when Bluetooth
+/// or other virtual COM ports are present), which would otherwise freeze the
+/// UI isolate on every poll.
 class DesktopPortDiscovery implements PortDiscovery {
-  @override
-  List<String> listPorts() => SerialPort.availablePorts;
+  /// Most recent enumeration, refreshed by [watch]. Returned synchronously by
+  /// [listPorts] so callers never trigger the blocking native call themselves.
+  List<String> _cached = const [];
 
   @override
-  Stream<List<String>> watch({Duration interval = const Duration(seconds: 1)}) {
-    List<String> previous = SerialPort.availablePorts;
+  List<String> listPorts() => _cached;
+
+  static Future<List<String>> _enumerate() =>
+      Isolate.run(() => SerialPort.availablePorts);
+
+  @override
+  Stream<List<String>> watch({Duration interval = const Duration(seconds: 2)}) {
     late final StreamController<List<String>> controller;
     Timer? timer;
+    var polling = false;
 
-    void poll(_) {
-      final current = SerialPort.availablePorts;
-      if (!_sameList(previous, current)) {
-        previous = current;
-        controller.add(current);
+    Future<void> poll() async {
+      if (polling) return; // Skip if a slow enumeration is still running.
+      polling = true;
+      try {
+        final current = await _enumerate();
+        if (!_sameList(_cached, current)) {
+          _cached = current;
+          if (!controller.isClosed) controller.add(current);
+        }
+      } catch (_) {
+        // Ignore transient enumeration errors; the next tick will retry.
+      } finally {
+        polling = false;
       }
     }
 
     controller = StreamController<List<String>>(
-      onListen: () => timer = Timer.periodic(interval, poll),
+      onListen: () {
+        poll(); // Emit an initial list as soon as it is available.
+        timer = Timer.periodic(interval, (_) => poll());
+      },
       onCancel: () {
         timer?.cancel();
         timer = null;

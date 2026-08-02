@@ -19,16 +19,42 @@ class TrafficLog {
   final StreamController<TrafficEvent> _controller =
       StreamController<TrafficEvent>.broadcast();
 
+  // Cumulative link statistics (survive the capped event buffer).
+  int _bytesSent = 0;
+  int _bytesReceived = 0;
+  int _framesSent = 0;
+  int _framesReceived = 0;
+
+  int get bytesSent => _bytesSent;
+  int get bytesReceived => _bytesReceived;
+  int get framesSent => _framesSent;
+  int get framesReceived => _framesReceived;
+
   List<TrafficEvent> get events => List.unmodifiable(_events);
   Stream<TrafficEvent> get stream => _controller.stream;
 
   void add(bool sent, Uint8List data) {
     final event = TrafficEvent(sent, data);
+    if (sent) {
+      _bytesSent += data.length;
+      _framesSent++;
+    } else {
+      _bytesReceived += data.length;
+      _framesReceived++;
+    }
     _events.add(event);
     if (_events.length > capacity) {
       _events.removeRange(0, _events.length - capacity);
     }
     if (!_controller.isClosed) _controller.add(event);
+  }
+
+  /// Resets the cumulative counters (e.g. when starting a new connection).
+  void resetCounters() {
+    _bytesSent = 0;
+    _bytesReceived = 0;
+    _framesSent = 0;
+    _framesReceived = 0;
   }
 
   void clear() => _events.clear();

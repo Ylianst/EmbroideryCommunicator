@@ -8,11 +8,11 @@ In the late 90's Bernina released the Artista 180 embroidery machine. At the tim
 
 **Run it now in your browser: [Launch the Web App](https://ylianst.github.io/EmbroideryCommunicator/app/)** (requires a Web Serial–capable browser such as Chrome or Edge).
 
-Get the latest desktop builds from the [Releases page](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest):
-
-- **Windows (x64)** — [`EmbroideryCommunicator-<version>-windows-x64.zip`](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest)
-- **macOS** — [`EmbroideryCommunicator-<version>-macos.dmg`](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest)
-- **Linux (x64)** — [`.tar.gz`, `.deb`, or `.AppImage`](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest)
+- [Windows (x64) (.zip)](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest/download/EmbroideryCommunicator-windows-x64.zip). Runs on 64-bit Windows 10 and 11.
+- [macOS (.dmg)](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest/download/EmbroideryCommunicator-macos.dmg). Universal binary.
+- [Linux x64 (.tar.gz)](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest/download/EmbroideryCommunicator-linux-x64.tar.gz) | [.deb](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest/download/EmbroideryCommunicator-linux-x64.deb) | [.AppImage](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest/download/EmbroideryCommunicator-linux-x64.AppImage).
+- [Linux ARM64 (.tar.gz)](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest/download/EmbroideryCommunicator-linux-arm64.tar.gz) | [.deb](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest/download/EmbroideryCommunicator-linux-arm64.deb) | [.AppImage](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest/download/EmbroideryCommunicator-linux-arm64.AppImage).
+- [Web Version](https://ylianst.github.io/EmbroideryCommunicator/app/). Browsers with Web Serial support (Chrome & Edge).
 
 ## Features
 

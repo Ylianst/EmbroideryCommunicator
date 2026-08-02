@@ -69,14 +69,14 @@ jobs:
         run: |
           $version = "${{ steps.version.outputs.version }}"
           $buildDir = "src\build\windows\x64\runner\Release"
-          $zipName = "EmbroideryCommunicator-$version-windows-x64.zip"
+          $zipName = "EmbroideryCommunicator-windows-x64.zip"
           Compress-Archive -Path "$buildDir\*" -DestinationPath $zipName -Force
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-x64
-          path: EmbroideryCommunicator-*-windows-x64.zip
+          path: EmbroideryCommunicator-windows-x64.zip
 
   # ---------------------------------------------------------------------------
   # Linux (x64 + arm64) desktop build
@@ -144,7 +144,7 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           cd src/build/linux/${{ matrix.arch }}/release/bundle
-          tar -czf "$GITHUB_WORKSPACE/EmbroideryCommunicator-$VERSION-linux-${{ matrix.arch }}.tar.gz" .
+          tar -czf "$GITHUB_WORKSPACE/EmbroideryCommunicator-linux-${{ matrix.arch }}.tar.gz" .
 
       - name: Package .deb
         run: |
@@ -188,7 +188,7 @@ jobs:
           EOF
           sed -i 's/^          //' "$PKG_DIR/DEBIAN/control"
 
-          dpkg-deb --build "$PKG_DIR" "EmbroideryCommunicator-$VERSION-linux-${{ matrix.arch }}.deb"
+          dpkg-deb --build "$PKG_DIR" "EmbroideryCommunicator-linux-${{ matrix.arch }}.deb"
 
       - name: Package AppImage
         run: |
@@ -237,16 +237,16 @@ jobs:
           chmod +x appimagetool
 
           # Build AppImage
-          ARCH=${{ matrix.appimagetool_arch }} ./appimagetool --no-appstream "$APPDIR" "EmbroideryCommunicator-$VERSION-linux-${{ matrix.arch }}.AppImage"
+          ARCH=${{ matrix.appimagetool_arch }} ./appimagetool --no-appstream "$APPDIR" "EmbroideryCommunicator-linux-${{ matrix.arch }}.AppImage"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.arch }}
           path: |
-            EmbroideryCommunicator-*-linux-${{ matrix.arch }}.tar.gz
-            EmbroideryCommunicator-*-linux-${{ matrix.arch }}.deb
-            EmbroideryCommunicator-*-linux-${{ matrix.arch }}.AppImage
+            EmbroideryCommunicator-linux-${{ matrix.arch }}.tar.gz
+            EmbroideryCommunicator-linux-${{ matrix.arch }}.deb
+            EmbroideryCommunicator-linux-${{ matrix.arch }}.AppImage
 
   # ---------------------------------------------------------------------------
   # macOS desktop build
@@ -336,7 +336,7 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           APP_PATH=$(find src/build/macos/Build/Products/Release -name "*.app" -maxdepth 1 | head -1)
-          DMG_NAME="EmbroideryCommunicator-$VERSION-macos.dmg"
+          DMG_NAME="EmbroideryCommunicator-macos.dmg"
           VOLUME_NAME="Embroidery Communicator"
           STAGING_DIR="dmg_staging"
 
@@ -351,7 +351,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: EmbroideryCommunicator-*-macos.dmg
+          path: EmbroideryCommunicator-macos.dmg
 
   # ---------------------------------------------------------------------------
   # Publish GitHub Release with all desktop artifacts
@@ -371,14 +371,14 @@ jobs:
           name: Embroidery Communicator ${{ github.ref_name }}
           generate_release_notes: true
           files: |
-            artifacts/windows-x64/EmbroideryCommunicator-*-windows-x64.zip
-            artifacts/linux-x64/EmbroideryCommunicator-*-linux-x64.tar.gz
-            artifacts/linux-x64/EmbroideryCommunicator-*-linux-x64.deb
-            artifacts/linux-x64/EmbroideryCommunicator-*-linux-x64.AppImage
-            artifacts/linux-arm64/EmbroideryCommunicator-*-linux-arm64.tar.gz
-            artifacts/linux-arm64/EmbroideryCommunicator-*-linux-arm64.deb
-            artifacts/linux-arm64/EmbroideryCommunicator-*-linux-arm64.AppImage
-            artifacts/macos/EmbroideryCommunicator-*-macos.dmg
+            artifacts/windows-x64/EmbroideryCommunicator-windows-x64.zip
+            artifacts/linux-x64/EmbroideryCommunicator-linux-x64.tar.gz
+            artifacts/linux-x64/EmbroideryCommunicator-linux-x64.deb
+            artifacts/linux-x64/EmbroideryCommunicator-linux-x64.AppImage
+            artifacts/linux-arm64/EmbroideryCommunicator-linux-arm64.tar.gz
+            artifacts/linux-arm64/EmbroideryCommunicator-linux-arm64.deb
+            artifacts/linux-arm64/EmbroideryCommunicator-linux-arm64.AppImage
+            artifacts/macos/EmbroideryCommunicator-macos.dmg
 
   # ---------------------------------------------------------------------------
   # Build the web version and publish it into docs/app for GitHub Pages.

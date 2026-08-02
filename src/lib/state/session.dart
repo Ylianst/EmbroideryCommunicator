@@ -55,6 +55,9 @@ class MachineSessionState {
   final bool pcCardPresent;
   final bool busy;
 
+  /// Current serial baud rate, or null for network/relay connections.
+  final int? baudRate;
+
   const MachineSessionState({
     this.status = ConnectionState.disconnected,
     this.message,
@@ -64,6 +67,7 @@ class MachineSessionState {
     this.pcCardFiles = const [],
     this.pcCardPresent = false,
     this.busy = false,
+    this.baudRate,
   });
 
   bool get isConnected => status == ConnectionState.connected;
@@ -79,6 +83,7 @@ class MachineSessionState {
     List<EmbroideryFile>? pcCardFiles,
     bool? pcCardPresent,
     bool? busy,
+    int? baudRate,
   }) {
     return MachineSessionState(
       status: status ?? this.status,
@@ -89,6 +94,7 @@ class MachineSessionState {
       pcCardFiles: pcCardFiles ?? this.pcCardFiles,
       pcCardPresent: pcCardPresent ?? this.pcCardPresent,
       busy: busy ?? this.busy,
+      baudRate: baudRate ?? this.baudRate,
     );
   }
 }
@@ -116,6 +122,7 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
     state = state.copyWith(
         status: ConnectionState.connecting, message: 'Connecting…');
 
+    ref.read(trafficLogProvider).resetCounters();
     final factory = ref.read(transportFactoryProvider);
     final timing = ref.read(protocolTimingProvider);
 
@@ -138,7 +145,9 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
         _controller =
             MachineController(engine, timing: ref.read(controllerTimingProvider));
         state = state.copyWith(
-            status: ConnectionState.connected, message: 'Connected at $baud baud');
+            status: ConnectionState.connected,
+            message: 'Connected at $baud baud',
+            baudRate: baud);
         await refresh();
         return;
       }
@@ -158,6 +167,7 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
     state = state.copyWith(
         status: ConnectionState.connecting, message: 'Connecting to $host…');
 
+    ref.read(trafficLogProvider).resetCounters();
     final RelayConnection connection = TrafficTapConnection(
       useWebSocket
           ? WebSocketRelayConnection('ws://$host:$port')
