@@ -4,57 +4,356 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Embroidery Communicator</title>
+  <meta name="description" content="Connect to Bernina Artista embroidery machines from a modern computer or browser. Upload, download, and manage embroidery patterns over serial or network." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Playfair+Display:wght@600;700&family=Nunito+Sans:wght@400;600;700&display=swap" rel="stylesheet" />
   <style>
-    :root { color-scheme: light dark; }
+    :root {
+      color-scheme: light;
+      --bg: #fbf7f2;
+      --paper: #ffffff;
+      --ink: #4a3f35;
+      --ink-soft: #7a6d5f;
+      --ink-faint: #a99a89;
+      --thread: #c25b6e;      /* rose thread */
+      --thread-dark: #a8465a;
+      --thread-2: #6f9a8d;    /* sage thread */
+      --thread-3: #d9a441;    /* gold thread */
+      --linen: #f3ece2;
+      --border: #e6dccd;
+      --stitch: #d8c7b2;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: #1e1e1e;
-      color: #eaeaea;
+      font-family: "Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.65;
+      /* subtle gingham / linen weave */
+      background-image:
+        linear-gradient(rgba(255,255,255,0.6), rgba(255,255,255,0.6)),
+        repeating-linear-gradient(0deg, rgba(194,91,110,0.04) 0, rgba(194,91,110,0.04) 1px, transparent 1px, transparent 22px),
+        repeating-linear-gradient(90deg, rgba(111,154,141,0.04) 0, rgba(111,154,141,0.04) 1px, transparent 1px, transparent 22px);
+    }
+    a { color: var(--thread-dark); }
+
+    h1, h2, h3 { font-family: "Playfair Display", Georgia, serif; }
+
+    /* Header */
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
       display: flex;
-      min-height: 100vh;
       align-items: center;
-      justify-content: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 24px;
+      background: rgba(255, 255, 255, 0.9);
+      backdrop-filter: blur(6px);
+      border-bottom: 2px dashed var(--stitch);
     }
-    .card {
-      max-width: 640px;
-      padding: 40px 32px;
-      text-align: center;
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-family: "Caveat", cursive;
+      font-size: 1.7rem;
+      color: var(--thread-dark);
+      line-height: 1;
     }
-    h1 { font-size: 2rem; margin: 0 0 8px; }
-    p.tagline { color: #b0b0b0; margin: 0 0 28px; }
+    .brand .needle { font-size: 1.4rem; }
     a.button {
       display: inline-block;
-      background: #5c6bc0;
+      background: var(--thread);
       color: #fff;
       text-decoration: none;
-      padding: 14px 28px;
-      border-radius: 8px;
-      font-size: 1.1rem;
-      font-weight: 600;
+      padding: 11px 24px;
+      border-radius: 999px;
+      font-family: "Nunito Sans", sans-serif;
+      font-size: 1rem;
+      font-weight: 700;
+      white-space: nowrap;
+      box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--thread);
+      transition: background 0.15s ease, transform 0.15s ease;
     }
-    a.button:hover { background: #7986cb; }
-    .links { margin-top: 28px; font-size: 0.95rem; }
-    .links a { color: #90caf9; text-decoration: none; margin: 0 10px; }
-    .links a:hover { text-decoration: underline; }
-    .note { margin-top: 24px; color: #888; font-size: 0.85rem; }
+    a.button:hover { background: var(--thread-dark); transform: translateY(-1px); }
+
+    /* Layout */
+    main {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 24px 72px;
+    }
+
+    /* Hero */
+    .hero {
+      padding: 60px 0 36px;
+      text-align: center;
+    }
+    .hoop {
+      display: inline-block;
+      font-family: "Caveat", cursive;
+      font-size: 1.4rem;
+      color: var(--thread-2);
+      margin-bottom: 6px;
+    }
+    .hero h1 {
+      font-size: 3rem;
+      margin: 0 0 14px;
+      line-height: 1.1;
+      color: var(--ink);
+    }
+    .hero h1 .accent { color: var(--thread); }
+    .hero p.tagline {
+      color: var(--ink-soft);
+      font-size: 1.2rem;
+      max-width: 640px;
+      margin: 0 auto 28px;
+    }
+    .hero-frame {
+      display: inline-block;
+      padding: 14px;
+      background: var(--paper);
+      border-radius: 16px;
+      border: 2px dashed var(--stitch);
+      box-shadow: 0 14px 40px rgba(74, 63, 53, 0.12);
+    }
+    .hero-img {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      border-radius: 8px;
+    }
+
+    /* Sections */
+    section { margin-top: 56px; }
+    section h2 {
+      font-size: 1.9rem;
+      margin: 0 0 18px;
+      color: var(--ink);
+      text-align: center;
+    }
+    section h2 .thread-line {
+      display: block;
+      width: 90px;
+      height: 0;
+      margin: 10px auto 0;
+      border-top: 3px dotted var(--thread-3);
+    }
+    .lead { color: var(--ink-soft); font-size: 1.05rem; }
+    .card-paper {
+      background: var(--paper);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 28px 32px;
+      box-shadow: 0 6px 20px rgba(74, 63, 53, 0.06);
+    }
+
+    /* Feature grid */
+    .features {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 18px;
+    }
+    .feature {
+      position: relative;
+      background: var(--paper);
+      border: 2px dashed var(--stitch);
+      border-radius: 14px;
+      padding: 22px 20px 20px;
+    }
+    .feature .emoji {
+      font-size: 1.6rem;
+      display: inline-block;
+      margin-bottom: 8px;
+    }
+    .feature h3 { margin: 0 0 6px; font-size: 1.15rem; color: var(--thread-dark); }
+    .feature p { margin: 0; color: var(--ink-soft); font-size: 0.95rem; }
+
+    /* Steps */
+    ol.steps { padding-left: 22px; margin: 0; }
+    ol.steps li { margin-bottom: 10px; color: var(--ink-soft); }
+    ol.steps li::marker { color: var(--thread); font-weight: 700; }
+    ol.steps li strong { color: var(--ink); }
+
+    /* Downloads */
+    .downloads {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .downloads a {
+      display: inline-block;
+      background: var(--linen);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 10px 18px;
+      text-decoration: none;
+      color: var(--ink);
+      font-size: 0.95rem;
+      font-weight: 600;
+      transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+    }
+    .downloads a:hover { border-color: var(--thread); background: #fff; color: var(--thread-dark); }
+
+    .note {
+      margin-top: 22px;
+      color: var(--ink-soft);
+      font-size: 0.9rem;
+      background: var(--linen);
+      border-left: 4px solid var(--thread-2);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+
+    /* Footer */
+    footer {
+      border-top: 2px dashed var(--stitch);
+      padding: 30px 24px;
+      text-align: center;
+      color: var(--ink-faint);
+      font-size: 0.9rem;
+    }
+    footer .made {
+      font-family: "Caveat", cursive;
+      font-size: 1.2rem;
+      color: var(--thread-2);
+      margin-bottom: 8px;
+    }
+    footer a { color: var(--thread-dark); margin: 0 8px; text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+
+    @media (max-width: 520px) {
+      .hero h1 { font-size: 2.2rem; }
+      .brand span.name { display: none; }
+    }
   </style>
 </head>
 <body>
-  <main class="card">
-    <h1>Embroidery Communicator</h1>
-    <p class="tagline">
-      Communicate with Bernina Artista embroidery machines over serial or network.
-    </p>
-    <a class="button" href="app/">Launch the Web App</a>
-    <div class="links">
-      <a href="https://github.com/Ylianst/EmbroideryCommunicator">Project on GitHub</a>
-      <a href="https://github.com/Ylianst/EmbroideryCommunicator/releases/latest">Download desktop apps</a>
+  <header>
+    <div class="brand">
+      <span class="needle">🪡</span>
+      <span class="name">Embroidery Communicator</span>
     </div>
-    <p class="note">
-      The web version requires a browser with Web Serial support (Chrome or Edge)
-      to connect to a machine over a USB-to-serial adapter.
-    </p>
+    <a class="button" href="app/">Launch the Web App</a>
+  </header>
+
+  <main>
+    <section class="hero">
+      <span class="hoop">✿ stitch your ideas into thread ✿</span>
+      <h1>Embroidery <span class="accent">Communicator</span></h1>
+      <p class="tagline">
+        Bring your vintage Bernina Artista back to life &mdash; send, save, and manage
+        embroidery designs from any modern computer or browser.
+      </p>
+      <div class="hero-frame">
+        <img
+          class="hero-img"
+          src="https://github.com/Ylianst/EmbroideryCommunicator/raw/main/docs/images/EmbroideryCommunicator.png"
+          alt="Embroidery Communicator application showing machine information and stored embroidery patterns"
+        />
+      </div>
+    </section>
+
+    <section>
+      <h2>A Second Life for a Classic<span class="thread-line"></span></h2>
+      <div class="card-paper">
+        <p class="lead">
+          In the late 90's Bernina released the Artista 180 embroidery machine. At the
+          time it cost 3000 to 4000 US dollars and is still available today second-hand
+          for $800 and up. These robust machines connect to a PC via a serial port
+          (RS232), and Bernina once provided a Windows application to upload embroidery
+          patterns. Sadly that software only runs on Windows XP, so this open-source
+          tool was created to fill the gap &mdash; giving these lovely machines a second
+          life on modern Windows, macOS, Linux, and even directly in your browser.
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <h2>What It Can Stitch Up<span class="thread-line"></span></h2>
+      <div class="features">
+        <div class="feature">
+          <span class="emoji">🔌</span>
+          <h3>Auto-detect ports</h3>
+          <p>Automatically finds new serial ports the moment a USB-to-Serial adapter is connected.</p>
+        </div>
+        <div class="feature">
+          <span class="emoji">🧵</span>
+          <h3>Machine info</h3>
+          <p>View details about your connected machine, including its firmware version.</p>
+        </div>
+        <div class="feature">
+          <span class="emoji">🗂️</span>
+          <h3>Browse patterns</h3>
+          <p>List embroidery patterns stored in both the embroidery module and the PC card.</p>
+        </div>
+        <div class="feature">
+          <span class="emoji">⬆️</span>
+          <h3>Upload designs</h3>
+          <p>Send embroidery patterns in .EXP format straight to the embroidery module.</p>
+        </div>
+        <div class="feature">
+          <span class="emoji">⬇️</span>
+          <h3>Download designs</h3>
+          <p>Pull patterns off the embroidery module and PC card, saved as .EXP files.</p>
+        </div>
+        <div class="feature">
+          <span class="emoji">✂️</span>
+          <h3>Manage storage</h3>
+          <p>Delete embroidery patterns from the embroidery module and PC card to free up space.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Get Stitching<span class="thread-line"></span></h2>
+      <div class="card-paper">
+        <ol class="steps">
+          <li>Get a <strong>USB-to-Serial DB9 adapter</strong> (about $9&ndash;$15 online).</li>
+          <li>Launch the web app, or download the desktop version for your platform below.</li>
+          <li>Connect the USB-to-Serial cable &mdash; the software auto-detects the new port.</li>
+          <li>Hit <strong>Connect</strong> to talk to the embroidery machine.</li>
+          <li>Machine information and existing patterns appear automatically.</li>
+          <li>
+            Design patterns with <a href="https://inkscape.org/">InkScape</a> and the
+            <a href="https://inkstitch.org/">Ink/Stitch</a> extension, then export to
+            .EXP to upload.
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <section>
+      <h2>Bring It Home<span class="thread-line"></span></h2>
+      <div class="card-paper">
+        <p class="lead">Run it now in your browser, or install the desktop app.</p>
+        <div class="downloads">
+          <a href="app/">Web App (Chrome &amp; Edge)</a>
+          <a href="https://github.com/Ylianst/EmbroideryCommunicator/releases/latest/download/EmbroideryCommunicator-windows-x64.zip">Windows x64 (.zip)</a>
+          <a href="https://github.com/Ylianst/EmbroideryCommunicator/releases/latest/download/EmbroideryCommunicator-macos.dmg">macOS (.dmg)</a>
+          <a href="https://github.com/Ylianst/EmbroideryCommunicator/releases/latest/download/EmbroideryCommunicator-linux-x64.tar.gz">Linux x64 (.tar.gz)</a>
+          <a href="https://github.com/Ylianst/EmbroideryCommunicator/releases/latest/download/EmbroideryCommunicator-linux-arm64.tar.gz">Linux ARM64 (.tar.gz)</a>
+          <a href="https://github.com/Ylianst/EmbroideryCommunicator/releases/latest">All releases &amp; formats</a>
+        </div>
+        <p class="note">
+          The web version requires a browser with Web Serial support (Chrome or Edge)
+          to connect to a machine over a USB-to-serial adapter.
+        </p>
+      </div>
+    </section>
   </main>
+
+  <footer>
+    <div class="made">✿ made with thread &amp; code ✿</div>
+    <a href="https://github.com/Ylianst/EmbroideryCommunicator">Project on GitHub</a>
+    <a href="https://github.com/Ylianst/EmbroideryCommunicator/blob/main/docs/History.md">History</a>
+    <a href="https://github.com/Ylianst/EmbroideryCommunicator/issues">Report an issue</a>
+  </footer>
 </body>
 </html>
