@@ -6,6 +6,8 @@ In the late 90's Bernina released the Artista 180 embroidery machine. At the tim
 
 ## Download
 
+**Run it now in your browser: [Launch the Web App](https://ylianst.github.io/EmbroideryCommunicator/app/)** (requires a Web Serial–capable browser such as Chrome or Edge).
+
 Get the latest desktop builds from the [Releases page](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest):
 
 - **Windows (x64)** — [`EmbroideryCommunicator-<version>-windows-x64.zip`](https://github.com/Ylianst/EmbroideryCommunicator/releases/latest)
