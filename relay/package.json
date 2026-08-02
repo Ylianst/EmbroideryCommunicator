@@ -1,0 +1,24 @@
+{
+  "name": "embroidery-stack",
+  "version": "1.0.0",
+  "description": "NodeJS application for communicating with embroidery machines via serial port",
+  "main": "SerialStack.js",
+  "scripts": {
+    "test": "node TestStack.js",
+    "start": "node TestStack.js"
+  },
+  "keywords": [
+    "embroidery",
+    "serial",
+    "bernina",
+    "artista"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "serialport": "^12.0.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
