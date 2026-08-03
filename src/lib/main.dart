@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'app.dart';
+import 'services/update_service.dart';
 
 const _desktopPlatforms = {
   TargetPlatform.windows,
@@ -26,6 +27,10 @@ Future<void> main() async {
       await windowManager.focus();
     });
   }
+
+  // Initialise the desktop self-update service (desktop only) so users can
+  // check for and install application updates from the Help menu.
+  await UpdateService.instance.init();
 
   runApp(const ProviderScope(child: EmbroideryCommunicatorApp()));
 }

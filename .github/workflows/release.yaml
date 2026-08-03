@@ -7,6 +7,9 @@ on:
 permissions:
   contents: write
 
+env:
+  BASE_URL: https://ylianst.github.io/EmbroideryCommunicator
+
 jobs:
   # ---------------------------------------------------------------------------
   # Windows (x64) desktop build
@@ -72,11 +75,43 @@ jobs:
           $zipName = "EmbroideryCommunicator-windows-x64.zip"
           Compress-Archive -Path "$buildDir\*" -DestinationPath $zipName -Force
 
+      - name: Generate update package
+        shell: pwsh
+        working-directory: src
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $buildNumber = "${{ steps.version.outputs.build_number }}"
+          dart run desktop_updater:package `
+            --input build/windows/x64/runner/Release `
+            --output dist/desktop_updater/releases/$version/windows-x64 `
+            --package-id com.ylianst.embroideryCommunicator `
+            --app-name embroidery_communicator `
+            --version $version `
+            --build-number $buildNumber `
+            --platform windows `
+            --channel stable `
+            --install-strategy wholeDirectoryReplace `
+            --artifact-url "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/embroidery_communicator-$version-windows-x64.zip"
+
+          # desktop_updater names the archive without the arch suffix
+          # (embroidery_communicator-<version>-windows.zip); rename it to match
+          # the arch-suffixed URL that the self-updater downloads.
+          $outDir = "dist/desktop_updater/releases/$version/windows-x64"
+          $srcZip = Join-Path $outDir "embroidery_communicator-$version-windows.zip"
+          $dstZip = Join-Path $outDir "embroidery_communicator-$version-windows-x64.zip"
+          if (Test-Path $srcZip) { Move-Item -Force $srcZip $dstZip }
+
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-x64
           path: EmbroideryCommunicator-windows-x64.zip
+
+      - name: Upload update package
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-update-x64
+          path: src/dist/desktop_updater/releases/
 
   # ---------------------------------------------------------------------------
   # Linux (x64 + arm64) desktop build
@@ -248,6 +283,36 @@ jobs:
             EmbroideryCommunicator-linux-${{ matrix.arch }}.deb
             EmbroideryCommunicator-linux-${{ matrix.arch }}.AppImage
 
+      - name: Generate update package
+        working-directory: src
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BUILD_NUMBER="${{ steps.version.outputs.build_number }}"
+          dart run desktop_updater:package \
+            --input build/linux/${{ matrix.arch }}/release/bundle \
+            --output dist/desktop_updater/releases/$VERSION/linux-${{ matrix.arch }} \
+            --package-id com.ylianst.embroideryCommunicator \
+            --app-name embroidery_communicator \
+            --version "$VERSION" \
+            --build-number "$BUILD_NUMBER" \
+            --platform linux \
+            --channel stable \
+            --install-strategy wholeDirectoryReplace \
+            --artifact-url "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/embroidery_communicator-$VERSION-linux-${{ matrix.arch }}.zip"
+
+          # desktop_updater names the archive without the arch suffix; rename it
+          # to match the arch-suffixed URL that the self-updater downloads.
+          OUT_DIR="dist/desktop_updater/releases/$VERSION/linux-${{ matrix.arch }}"
+          SRC_ZIP="$OUT_DIR/embroidery_communicator-$VERSION-linux.zip"
+          DST_ZIP="$OUT_DIR/embroidery_communicator-$VERSION-linux-${{ matrix.arch }}.zip"
+          if [ -f "$SRC_ZIP" ]; then mv -f "$SRC_ZIP" "$DST_ZIP"; fi
+
+      - name: Upload update package
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-update-${{ matrix.arch }}
+          path: src/dist/desktop_updater/releases/
+
   # ---------------------------------------------------------------------------
   # macOS desktop build
   # ---------------------------------------------------------------------------
@@ -347,11 +412,42 @@ jobs:
 
           hdiutil create -volname "$VOLUME_NAME" -srcfolder "$STAGING_DIR" -ov -format UDZO -imagekey zlib-level=9 -o "$DMG_NAME"
 
+      - name: Generate update package
+        working-directory: src
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BUILD_NUMBER="${{ steps.version.outputs.build_number }}"
+          APP_PATH=$(find build/macos/Build/Products/Release -name "*.app" -maxdepth 1 | head -1)
+          dart run desktop_updater:package \
+            --input "$APP_PATH" \
+            --output dist/desktop_updater/releases/$VERSION/macos \
+            --package-id com.ylianst.embroideryCommunicator \
+            --app-name "$(basename "$APP_PATH")" \
+            --version "$VERSION" \
+            --build-number "$BUILD_NUMBER" \
+            --platform macos \
+            --channel stable \
+            --install-strategy wholeBundleReplace \
+            --artifact-url "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/embroidery_communicator-$VERSION-macos.zip"
+
+          # desktop_updater names the archive after the .app bundle; rename it
+          # to the URL the self-updater downloads.
+          OUT_DIR="dist/desktop_updater/releases/$VERSION/macos"
+          DST_ZIP="$OUT_DIR/embroidery_communicator-$VERSION-macos.zip"
+          SRC_ZIP=$(find "$OUT_DIR" -maxdepth 1 -name '*.zip' ! -name "$(basename "$DST_ZIP")" | head -1)
+          if [ -n "$SRC_ZIP" ] && [ -f "$SRC_ZIP" ]; then mv -f "$SRC_ZIP" "$DST_ZIP"; fi
+
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
           name: macos
           path: EmbroideryCommunicator-macos.dmg
+
+      - name: Upload update package
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-update
+          path: src/dist/desktop_updater/releases/
 
   # ---------------------------------------------------------------------------
   # Publish GitHub Release with all desktop artifacts
@@ -360,10 +456,78 @@ jobs:
     needs: [build-windows, build-linux, build-macos]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        working-directory: src
+        run: flutter pub get
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
+
+      - name: Assemble update site
+        working-directory: src
+        run: |
+          VERSION="${{ needs.build-windows.outputs.version }}"
+          BUILD_NUMBER="${{ needs.build-windows.outputs.build_number }}"
+          BASE_URL="${{ env.BASE_URL }}"
+
+          mkdir -p dist/desktop_updater/releases
+
+          # Copy all platform release packages (release.json + zips).
+          cp -r ../artifacts/windows-update-x64/* dist/desktop_updater/releases/ || true
+          cp -r ../artifacts/linux-update-x64/* dist/desktop_updater/releases/ || true
+          cp -r ../artifacts/linux-update-arm64/* dist/desktop_updater/releases/ || true
+          cp -r ../artifacts/macos-update/* dist/desktop_updater/releases/ || true
+
+          # Generate the combined app-archive.json referencing every platform.
+          dart run desktop_updater:app_archive upsert \
+            --archive dist/desktop_updater/app-archive.json \
+            --app-name "Embroidery Communicator" \
+            --version "$VERSION" \
+            --build-number "$BUILD_NUMBER" \
+            --platform windows \
+            --channel stable \
+            --release-url "$BASE_URL/releases/$VERSION/windows-x64/release.json"
+
+          dart run desktop_updater:app_archive upsert \
+            --archive dist/desktop_updater/app-archive.json \
+            --app-name "Embroidery Communicator" \
+            --version "$VERSION" \
+            --build-number "$BUILD_NUMBER" \
+            --platform linux \
+            --channel stable \
+            --release-url "$BASE_URL/releases/$VERSION/linux-x64/release.json"
+
+          dart run desktop_updater:app_archive upsert \
+            --archive dist/desktop_updater/app-archive.json \
+            --app-name "Embroidery Communicator" \
+            --version "$VERSION" \
+            --build-number "$BUILD_NUMBER" \
+            --platform linux \
+            --channel stable \
+            --release-url "$BASE_URL/releases/$VERSION/linux-arm64/release.json"
+
+          dart run desktop_updater:app_archive upsert \
+            --archive dist/desktop_updater/app-archive.json \
+            --app-name "Embroidery Communicator" \
+            --version "$VERSION" \
+            --build-number "$BUILD_NUMBER" \
+            --platform macos \
+            --channel stable \
+            --release-url "$BASE_URL/releases/$VERSION/macos/release.json"
+
+          echo "=== app-archive.json ==="
+          cat dist/desktop_updater/app-archive.json
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -379,12 +543,26 @@ jobs:
             artifacts/linux-arm64/EmbroideryCommunicator-linux-arm64.deb
             artifacts/linux-arm64/EmbroideryCommunicator-linux-arm64.AppImage
             artifacts/macos/EmbroideryCommunicator-macos.dmg
+            artifacts/windows-update-x64/**/*.zip
+            artifacts/linux-update-x64/**/*.zip
+            artifacts/linux-update-arm64/**/*.zip
+            artifacts/macos-update/**/*.zip
+
+      - name: Deploy update site to docs folder
+        run: |
+          cp -r src/dist/desktop_updater/* docs/
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/app-archive.json docs/releases/
+          git commit -m "Update desktop_updater artifacts for ${{ needs.build-windows.outputs.version }}" || echo "No changes to commit"
+          git push origin main
 
   # ---------------------------------------------------------------------------
   # Build the web version and publish it into docs/app for GitHub Pages.
   # Only the latest build is kept (the previous one is replaced each release).
   # ---------------------------------------------------------------------------
   deploy-web:
+    needs: [release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

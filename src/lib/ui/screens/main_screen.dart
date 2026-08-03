@@ -12,10 +12,12 @@ import '../../domain/exp/exp_writer.dart';
 import '../../domain/models/embroidery_file.dart';
 import '../../domain/models/enums.dart';
 import '../../domain/models/firmware_info.dart';
+import '../../services/update_service.dart';
 import '../../state/port_providers.dart';
 import '../../state/session.dart';
 import '../about.dart';
 import '../app_exit.dart';
+import '../update_dialog.dart';
 import '../widgets/app_menu.dart';
 import '../widgets/embroidery_file_tile.dart';
 import 'debug_screen.dart';
@@ -105,11 +107,64 @@ Future<void> showNetworkConnectDialog(
 }
 
 /// Main application screen: connect, view machine info, and manage files.
-class MainScreen extends ConsumerWidget {
+class MainScreen extends ConsumerStatefulWidget {
   const MainScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<MainScreen> createState() => _MainScreenState();
+}
+
+const _prefLastUpdateCheck = 'last_update_check';
+
+class _MainScreenState extends ConsumerState<MainScreen> {
+  @override
+  void initState() {
+    super.initState();
+    // Check for updates in the background shortly after startup (throttled to
+    // once a day). Deferred to after the first frame so a dialog can be shown.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_checkForUpdatesInBackground());
+    });
+  }
+
+  /// Silently checks for updates in the background and, if one is available,
+  /// pops up the update dialog. Checks at most once per day; any failure
+  /// (e.g. no network) is ignored silently.
+  Future<void> _checkForUpdatesInBackground() async {
+    if (!UpdateService.instance.isSupported) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final lastCheckMs = prefs.getInt(_prefLastUpdateCheck) ?? 0;
+    if (lastCheckMs > 0) {
+      final lastCheck = DateTime.fromMillisecondsSinceEpoch(lastCheckMs);
+      if (DateTime.now().difference(lastCheck) < const Duration(days: 1)) {
+        return;
+      }
+    }
+
+    final result =
+        await UpdateService.instance.checkForUpdatesInBackground();
+    // A failed check (e.g. no network) is ignored silently and not recorded,
+    // so the next launch will try again.
+    if (result == BackgroundUpdateCheck.failed ||
+        result == BackgroundUpdateCheck.unsupported) {
+      return;
+    }
+
+    // Record the successful check time so we don't check again for a day.
+    await prefs.setInt(
+      _prefLastUpdateCheck,
+      DateTime.now().millisecondsSinceEpoch,
+    );
+
+    if (!mounted) return;
+    if (result == BackgroundUpdateCheck.updateAvailable) {
+      showUpdateDialog(context);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final session = ref.watch(machineSessionProvider);
     final connecting = session.isConnecting;
 
@@ -243,6 +298,11 @@ class MainScreen extends ConsumerWidget {
       AppSubmenu(
         label: 'Help',
         children: [
+          if (UpdateService.instance.isSupported)
+            AppMenuAction(
+              label: 'Check for Updates\u2026',
+              onPressed: () => showUpdateDialog(context),
+            ),
           AppMenuAction(
             label: 'About\u2026',
             hideOnMacOS: true,
