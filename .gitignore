@@ -7,6 +7,9 @@
 .buildlog/
 .history
 
+# Self-updater zip payloads are served from GitHub Releases, not committed here.
+docs/releases/**/*.zip
+
 
 
 # Flutter repo-specific
