@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 3,
+  "packageId": "com.ylianst.embroideryCommunicator",
+  "appName": "embroidery_communicator.app",
+  "version": "0.0.3",
+  "buildNumber": 3,
+  "platform": "macos",
+  "channel": "stable",
+  "artifact": {
+    "kind": "zip",
+    "url": "https://github.com/Ylianst/EmbroideryCommunicator/releases/download/v0.0.3/embroidery_communicator-0.0.3-macos.zip",
+    "sha256": "fd4eb8b2d1e3261eabe53ff0aceb975e5e2482b267b5a2e5cdfb0c04aa788e28",
+    "length": 20812600
+  },
+  "install": {
+    "strategy": "wholeBundleReplace"
+  },
+  "minimumUpdaterVersion": "2.0.0",
+  "generatedAt": "2026-08-03T01:21:57.662192Z"
+}
