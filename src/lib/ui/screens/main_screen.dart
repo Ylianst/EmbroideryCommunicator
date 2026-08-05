@@ -13,6 +13,7 @@ import '../../domain/models/embroidery_file.dart';
 import '../../domain/models/enums.dart';
 import '../../domain/models/firmware_info.dart';
 import '../../services/update_service.dart';
+import '../../services/debug_window_bridge.dart';
 import '../../state/port_providers.dart';
 import '../../state/session.dart';
 import '../about.dart';
@@ -331,6 +332,12 @@ class _MainScreenState extends ConsumerState<MainScreen> {
   void _openTool(BuildContext context, String tool) {
     if (tool == 'about') {
       showAppAbout(context);
+      return;
+    }
+    // On desktop the live debug view detaches into its own OS window so the
+    // main window stays usable while traffic is inspected.
+    if (tool == 'debug' && isDesktopPlatform) {
+      unawaited(DebugWindowBridge.instance.open(ref.read(trafficLogProvider)));
       return;
     }
     final Widget screen = switch (tool) {
