@@ -15,8 +15,10 @@ class MemoryDumpScreen extends ConsumerStatefulWidget {
 }
 
 class _MemoryDumpScreenState extends ConsumerState<MemoryDumpScreen> {
+  // Default to the entire 16MB address space, 0x000000..0xFFFFFF inclusive.
+  // The end field is exclusive, so 0x1000000 covers the final byte.
   final TextEditingController _start = TextEditingController(text: '000000');
-  final TextEditingController _end = TextEditingController(text: '010000');
+  final TextEditingController _end = TextEditingController(text: '1000000');
   bool _running = false;
   int _done = 0;
   int _total = 0;
@@ -36,40 +38,78 @@ class _MemoryDumpScreenState extends ConsumerState<MemoryDumpScreen> {
       setState(() => _error = 'Invalid range');
       return;
     }
+
+    // Choose the output file up front so an existing file can be resumed.
+    final suggested =
+        'memory-${start.toRadixString(16).toUpperCase().padLeft(6, '0')}.bin';
+    final location = await getSaveLocation(suggestedName: suggested);
+    if (location == null || !mounted) return;
+
+    // If the file already has data, resume from where it left off. The file is
+    // assumed to begin at the Start address, so the next byte to read is
+    // Start + <existing length>.
+    Uint8List existing = Uint8List(0);
+    try {
+      final existingFile = XFile(location.path);
+      if (await existingFile.length() > 0) {
+        existing = await existingFile.readAsBytes();
+      }
+    } catch (_) {
+      existing = Uint8List(0);
+    }
+    final resumeOffset = existing.length;
+    final effectiveStart = start + resumeOffset;
+    if (!mounted) return;
+    if (effectiveStart >= end) {
+      setState(() => _error = 'Selected file already covers the requested range');
+      return;
+    }
+
     setState(() {
       _running = true;
       _error = null;
-      _done = 0;
       _total = end - start;
+      _done = resumeOffset;
     });
 
     final notifier = ref.read(machineSessionProvider.notifier);
-    final data = await notifier.dumpMemory(
-      start: start,
+    final newData = await notifier.dumpMemory(
+      start: effectiveStart,
       end: end,
       progress: (done, total) {
-        if (mounted) setState(() => _done = done);
+        if (mounted) setState(() => _done = resumeOffset + done);
       },
     );
 
     if (!mounted) return;
     setState(() => _running = false);
-    if (data == null) {
-      setState(() => _error = 'Dump cancelled or failed');
+    if (newData == null || newData.isEmpty) {
+      setState(() => _error = 'Dump cancelled or failed; no new data read');
       return;
     }
-    await _save(data, start);
+
+    // Combine previously-saved bytes with the newly-downloaded bytes.
+    final combined = BytesBuilder()
+      ..add(existing)
+      ..add(newData);
+    final data = combined.toBytes();
+    await _save(data, location.path);
+
+    if (!mounted) return;
+    final expectedNew = end - effectiveStart;
+    if (newData.length < expectedNew) {
+      setState(() => _error =
+          'Dump incomplete; saved ${data.length} bytes. Re-run and select '
+          'this file to resume.');
+    }
   }
 
-  Future<void> _save(Uint8List data, int start) async {
-    final name =
-        'memory-${start.toRadixString(16).toUpperCase().padLeft(6, '0')}.bin';
-    final location = await getSaveLocation(suggestedName: name);
-    if (location == null || !mounted) return;
-    await XFile.fromData(data, name: name).saveTo(location.path);
+  Future<void> _save(Uint8List data, String path) async {
+    await XFile.fromData(data).saveTo(path);
     if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Saved $name')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Saved ${data.length} bytes')),
+      );
     }
   }
 
@@ -141,7 +181,10 @@ class _MemoryDumpScreenState extends ConsumerState<MemoryDumpScreen> {
             const SizedBox(height: 16),
             const Text(
               'Reading over serial is slow; large ranges can take a long time. '
-              'The full address space is 0x000000–0xFFFFFF.',
+              'The full address space is 0x000000–0xFFFFFF. Read errors are '
+              'retried automatically. To resume a failed download, run again '
+              'and pick the same file — it continues from where it left off, '
+              'assuming the file begins at the Start address.',
               style: TextStyle(color: Colors.grey),
             ),
           ],

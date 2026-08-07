@@ -303,10 +303,18 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
   void cancelDump() => _dumpCancelled = true;
 
   /// Reads memory from [start] up to (not including) [end] for a memory dump.
+  ///
+  /// On a read error the block is retried up to [maxRetries] times, pausing
+  /// [retryDelay] between attempts. If the read still fails (or the dump is
+  /// cancelled) the bytes collected so far are returned so the caller can save
+  /// a partial file and resume it later. Returns null only when there is no
+  /// engine, the range is empty, or nothing at all was read.
   Future<Uint8List?> dumpMemory({
     required int start,
     required int end,
     void Function(int done, int total)? progress,
+    int maxRetries = 10,
+    Duration retryDelay = const Duration(seconds: 3),
   }) async {
     final engine = _controller?.engine;
     if (engine == null || end <= start) return null;
@@ -317,11 +325,29 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
     var addr = start;
     try {
       while (addr < end) {
-        if (_dumpCancelled) return null;
+        if (_dumpCancelled) break;
         final remaining = end - addr;
         final chunk = remaining >= 256 ? 256 : remaining;
-        final result = await engine.readMemoryBlock(addr, chunk);
-        if (!result.success || result.binaryData == null) return null;
+
+        CommandResult? result;
+        for (var attempt = 0; attempt <= maxRetries; attempt++) {
+          if (_dumpCancelled) break;
+          result = await engine.readMemoryBlock(addr, chunk);
+          if (result.success && result.binaryData != null) break;
+          if (attempt == maxRetries) break;
+          final addrHex =
+              addr.toRadixString(16).toUpperCase().padLeft(6, '0');
+          state = state.copyWith(
+            message: 'Read error at 0x$addrHex, retrying '
+                '${attempt + 1}/$maxRetries…',
+          );
+          await Future.delayed(retryDelay);
+        }
+
+        if (_dumpCancelled) break;
+        if (result == null || !result.success || result.binaryData == null) {
+          break; // Retries exhausted; return what we have for resuming.
+        }
         builder.add(result.binaryData!);
         addr += chunk;
         progress?.call(addr - start, total);
