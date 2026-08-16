@@ -163,17 +163,26 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
   /// (when [useWebSocket] is set, or on web where TCP is unavailable).
   Future<void> connectNetwork(String host, int port,
       {bool useWebSocket = false}) async {
+    final RelayConnection inner = useWebSocket
+        ? WebSocketRelayConnection('ws://$host:$port')
+        : createTcpRelayConnection(host, port);
+    await _connectRelay(inner, label: host);
+  }
+
+  /// Connects to a relay reachable at a full WebSocket URL (e.g. when the app
+  /// is served in server-hosted mode and relays back to its own host).
+  Future<void> connectRelayUrl(String wsUrl) async {
+    await _connectRelay(WebSocketRelayConnection(wsUrl), label: wsUrl);
+  }
+
+  Future<void> _connectRelay(RelayConnection inner, {required String label}) async {
     if (state.status == ConnectionState.connecting || state.isConnected) return;
     state = state.copyWith(
-        status: ConnectionState.connecting, message: 'Connecting to $host…');
+        status: ConnectionState.connecting, message: 'Connecting to $label…');
 
     ref.read(trafficLogProvider).resetCounters();
-    final RelayConnection connection = TrafficTapConnection(
-      useWebSocket
-          ? WebSocketRelayConnection('ws://$host:$port')
-          : createTcpRelayConnection(host, port),
-      ref.read(trafficLogProvider),
-    );
+    final RelayConnection connection =
+        TrafficTapConnection(inner, ref.read(trafficLogProvider));
     try {
       await connection.connect();
     } catch (e) {
@@ -200,7 +209,7 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
     _controller =
         MachineController(engine, timing: ref.read(controllerTimingProvider));
     state = state.copyWith(
-        status: ConnectionState.connected, message: 'Connected to $host');
+        status: ConnectionState.connected, message: 'Connected to $label');
     await refresh();
   }
 

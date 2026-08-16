@@ -1,0 +1,26 @@
+{
+  "name": "embroidery-server",
+  "version": "1.0.0",
+  "description": "HTTP + WebSocket server that hosts the Embroidery Communicator web app and relays to an embroidery machine over serial.",
+  "main": "Server.js",
+  "scripts": {
+    "start": "node Server.js --run",
+    "dump": "node DumpMemory.js"
+  },
+  "keywords": [
+    "embroidery",
+    "serial",
+    "bernina",
+    "artista",
+    "websocket",
+    "flutter"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

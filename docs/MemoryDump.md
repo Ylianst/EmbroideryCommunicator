@@ -32,6 +32,11 @@ The Memory Dump feature allows advanced users to download the entire 16MB memory
 - **Sewing Machine**: Downloads memory from the main sewing machine controller
 - **Embroidery Module**: Downloads memory from the embroidery module (if attached)
 
+**Set the Address Range:**
+- **Start (hex)** and **End (hex, exclusive)** define the range to download.
+- The defaults cover the entire 16MB address space: Start `000000` and End `1000000`, which reads every byte from `0x000000` through `0xFFFFFF` inclusive.
+- Narrow the range if you only need a specific region.
+
 **Choose Output File:**
 1. Click the **Browse** button
 2. Navigate to your desired save location
@@ -43,9 +48,21 @@ The Memory Dump feature allows advanced users to download the entire 16MB memory
 1. Click the **Start** button to begin the memory dump
 2. Monitor the progress bar and status text
 3. The process will take about an hour.
-4. When complete, a confirmation message will appear
+4. If a read error occurs, the app automatically retries the failed block up to 10 times, pausing a few seconds between attempts. The status text shows the address and retry count.
+5. When complete, a confirmation message will appear
 
 ### Step 5: Cancel (Optional)
 
 - If you need to abort the download, click the **Cancel** button
-- The partial file will be automatically deleted
+- Whatever has been downloaded so far is saved to the output file, so the transfer can be resumed later.
+
+### Step 6: Resume a Failed or Cancelled Download
+
+If a download is interrupted (cancelled, disconnected, or unable to recover after retrying), you can pick up where it left off:
+
+1. Reopen the Memory Dump tool and use the **same Start address** as the original download.
+2. Click **Browse** and select the **same output file** you used before.
+3. Click **Start**. The file is assumed to begin at the Start address, so the download resumes at `Start + <existing file length>` and the new bytes are appended to the existing file.
+
+If the selected file already covers the requested range, the tool reports that no further data is needed.
+

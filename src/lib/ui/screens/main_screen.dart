@@ -14,6 +14,7 @@ import '../../domain/models/enums.dart';
 import '../../domain/models/firmware_info.dart';
 import '../../services/update_service.dart';
 import '../../services/debug_window_bridge.dart';
+import '../../services/hosted_config.dart';
 import '../../state/port_providers.dart';
 import '../../state/session.dart';
 import '../about.dart';
@@ -124,8 +125,20 @@ class _MainScreenState extends ConsumerState<MainScreen> {
     // Check for updates in the background shortly after startup (throttled to
     // once a day). Deferred to after the first frame so a dialog can be shown.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(_checkForUpdatesInBackground());
+      if (!mounted) return;
+      unawaited(_checkForUpdatesInBackground());
+      _autoConnectIfHosted();
     });
+  }
+
+  /// When served by the Embroidery Server, connect straight to its WebSocket
+  /// relay instead of prompting for a serial port or relay host.
+  void _autoConnectIfHosted() {
+    final hosted = readHostedConfig();
+    if (!hosted.hosted || hosted.wsUrl == null) return;
+    unawaited(
+      ref.read(machineSessionProvider.notifier).connectRelayUrl(hosted.wsUrl!),
+    );
   }
 
   /// Silently checks for updates in the background and, if one is available,
