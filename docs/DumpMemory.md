@@ -44,6 +44,7 @@ Run the tool from the `server` folder with
 | `--output`       | `-o`  | No       | `MemoryDump-<Module>-<date_time>.bin`     | Output file name.                                        |
 | `--start`        |       | No       | `000000`                                  | Start address in hex.                                    |
 | `--end`          |       | No       | `1000000`                                 | End address in hex, **exclusive**.                       |
+| `--debug`        | `-d`  | No       | off                                       | Show serial debug output (optional level, defaults to 1).|
 | `--help`         | `-h`  | No       | —                                         | Show help (also shown when run with no arguments).       |
 
 ### `--module` values

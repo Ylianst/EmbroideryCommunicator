@@ -44,16 +44,18 @@ OPTIONS:
                          MemoryDump-<Module>-<YYYY-MM-DD_HH-MM-SS>.bin
   --start <hex>          Start address (default: 000000)
   --end <hex>            End address, exclusive (default: 1000000)
+  --debug, -d [level]    Show serial debug output (level defaults to 1)
   --help, -h             Show this help
 
 EXAMPLES:
   node DumpMemory.js -p COM3 -m sewing
   node DumpMemory.js -p /dev/ttyUSB0 -m embroidery -o backup.bin
+  node DumpMemory.js -p COM3 -m sewing --debug
 `);
 }
 
 function parseArgs(argv) {
-  const opts = { start: DEFAULT_START, end: DEFAULT_END };
+  const opts = { start: DEFAULT_START, end: DEFAULT_END, debug: 0 };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const next = () => {
@@ -66,6 +68,17 @@ function parseArgs(argv) {
       case '-h':
         opts.help = true;
         break;
+      case '--debug':
+      case '-d': {
+        const peek = argv[i + 1];
+        if (peek !== undefined && /^\d+$/.test(peek)) {
+          opts.debug = parseInt(peek, 10);
+          i++;
+        } else {
+          opts.debug = 1;
+        }
+        break;
+      }
       case '--port':
       case '-p':
         opts.port = next();
@@ -120,6 +133,33 @@ function defaultFileName(moduleLabel) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// The tool's own output goes straight to the streams so it is unaffected by the
+// console silencing used to hide the serial stack's debug chatter.
+const out = (msg = '') => process.stdout.write(`${msg}\n`);
+const errOut = (msg = '') => process.stderr.write(`${msg}\n`);
+
+/**
+ * Silences the global console (used by SerialStack for debug output) unless a
+ * debug level is set. Returns a function that restores the console.
+ */
+function configureLogging(level) {
+  if (level > 0) return () => {};
+  const saved = {
+    log: console.log,
+    info: console.info,
+    warn: console.warn,
+    error: console.error,
+    debug: console.debug,
+  };
+  const noop = () => {};
+  console.log = noop;
+  console.info = noop;
+  console.warn = noop;
+  console.error = noop;
+  console.debug = noop;
+  return () => Object.assign(console, saved);
+}
+
 function addressString(addr) {
   return addr.toString(16).toUpperCase().padStart(6, '0');
 }
@@ -158,7 +198,7 @@ async function readBlockWithRetry(serialStack, addr, length, done, total) {
     } catch (error) {
       if (attempt === MAX_RETRIES) {
         process.stdout.write('\n');
-        console.error(
+        errOut(
           `Read failed at 0x${addressString(addr)} after ${MAX_RETRIES} retries: ${error.message}`,
         );
         return null;
@@ -172,10 +212,10 @@ async function readBlockWithRetry(serialStack, addr, length, done, total) {
 
 async function selectModule(serialStack, moduleKey) {
   if (moduleKey === 'embroidery') {
-    console.log('Selecting embroidery module (starting embroidery session)...');
+    out('Selecting embroidery module (starting embroidery session)...');
     await serialStack.StartEmbroiderySession();
   } else {
-    console.log('Selecting sewing machine (ensuring embroidery session is closed)...');
+    out('Selecting sewing machine (ensuring embroidery session is closed)...');
     if (await serialStack.IsEmbroiderySessionOpen()) {
       await serialStack.EndEmbroiderySession();
     }
@@ -197,17 +237,17 @@ async function run(opts) {
   try {
     SerialStack = require('./SerialStack');
   } catch (error) {
-    console.error('\n\u274C ERROR: could not load the serial stack.');
-    console.error('Install dependencies first:\n\n  cd server && npm install\n');
+    errOut('\n\u274C ERROR: could not load the serial stack.');
+    errOut('Install dependencies first:\n\n  cd server && npm install\n');
     process.exit(1);
   }
 
   const total = opts.end - opts.start;
-  console.log(`Serial port: ${opts.port}`);
-  console.log(`Module:      ${module.label}`);
-  console.log(`Range:       0x${addressString(opts.start)} .. 0x${addressString(opts.end)} (${formatBytes(total)})`);
-  console.log(`Output:      ${path.resolve(outputPath)}`);
-  console.log('');
+  out(`Serial port: ${opts.port}`);
+  out(`Module:      ${module.label}`);
+  out(`Range:       0x${addressString(opts.start)} .. 0x${addressString(opts.end)} (${formatBytes(total)})`);
+  out(`Output:      ${path.resolve(outputPath)}`);
+  out('');
 
   const serialStack = new SerialStack(opts.port, 19200);
   const output = fs.createWriteStream(outputPath);
@@ -216,28 +256,31 @@ async function run(opts) {
   const onSigint = () => {
     cancelled = true;
     process.stdout.write('\n');
-    console.log('Cancellation requested; finishing current block...');
+    out('Cancellation requested; finishing current block...');
   };
   process.on('SIGINT', onSigint);
+
+  // Hide the serial stack's debug chatter unless --debug was requested.
+  const restoreConsole = configureLogging(opts.debug);
 
   let done = 0;
   let complete = false;
   try {
-    console.log('Opening serial port (auto-detecting baud rate)...');
+    out('Opening serial port (auto-detecting baud rate)...');
     await serialStack.open();
-    console.log(`Serial port open at ${serialStack.baudRate} baud`);
+    out(`Serial port open at ${serialStack.baudRate} baud`);
 
     if (serialStack.baudRate !== 57600) {
       try {
         await serialStack.upgradeSpeed();
-        console.log(`Upgraded to ${serialStack.baudRate} baud`);
+        out(`Upgraded to ${serialStack.baudRate} baud`);
       } catch (error) {
-        console.log(`Staying at ${serialStack.baudRate} baud: ${error.message}`);
+        out(`Staying at ${serialStack.baudRate} baud: ${error.message}`);
       }
     }
 
     await selectModule(serialStack, module.key);
-    console.log('\nDumping memory:');
+    out('\nDumping memory:');
 
     let addr = opts.start;
     while (addr < opts.end && !cancelled) {
@@ -264,18 +307,19 @@ async function run(opts) {
       }
       await serialStack.close();
     } catch (error) {
-      console.error(`Error closing serial port: ${error.message}`);
+      errOut(`Error closing serial port: ${error.message}`);
     }
+    restoreConsole();
   }
 
   process.stdout.write('\n');
   if (complete) {
-    console.log(`\u2713 Done. Saved ${formatBytes(done)} to ${outputPath}`);
+    out(`\u2713 Done. Saved ${formatBytes(done)} to ${outputPath}`);
   } else if (cancelled) {
-    console.log(`Cancelled. Saved ${formatBytes(done)} to ${outputPath}`);
+    out(`Cancelled. Saved ${formatBytes(done)} to ${outputPath}`);
     process.exitCode = 130;
   } else {
-    console.log(`Incomplete. Saved ${formatBytes(done)} to ${outputPath}`);
+    out(`Incomplete. Saved ${formatBytes(done)} to ${outputPath}`);
     process.exitCode = 1;
   }
 }

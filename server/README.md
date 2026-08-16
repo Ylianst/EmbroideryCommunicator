@@ -137,6 +137,7 @@ Options:
 | `--output`, `-o` | Output file (default `MemoryDump-<Module>-<date_time>.bin`)   |
 | `--start`        | Start address in hex (default `000000`)                       |
 | `--end`          | End address in hex, exclusive (default `1000000`)             |
+| `--debug`, `-d`  | Show serial debug output (optional level, defaults to 1)      |
 | `--help`, `-h`   | Show help                                                     |
 
 If a block ultimately fails after all retries (or you press `Ctrl+C`), the
