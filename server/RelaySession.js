@@ -7,12 +7,12 @@
  * through the `send(buffer)` callback, so the same logic drives both a raw TCP
  * socket and a WebSocket connection.
  *
- * The serial + framing implementation is reused from the sibling `relay/`
- * package so there is a single source of truth for the machine protocol.
+ * The serial + framing implementation (SerialStack, TcpProtocol) is bundled in
+ * this folder so the server is fully self-contained.
  */
 
-const SerialStack = require('../relay/SerialStack');
-const TcpProtocol = require('../relay/TcpProtocol');
+const SerialStack = require('./SerialStack');
+const TcpProtocol = require('./TcpProtocol');
 
 const RELAY_VERSION = '1.0.0';
 const MAX_BUFFER_BYTES = 1048576; // 1 MB guard against runaway input.

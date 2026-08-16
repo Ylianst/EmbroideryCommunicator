@@ -13,7 +13,7 @@
  * Usage:
  *   node DumpMemory.js --port <serial> --module <sewing|embroidery> [--output <file>]
  *
- * Reuses the serial protocol implementation from ../relay/SerialStack.js.
+ * Uses the bundled SerialStack.js for serial communication.
  */
 
 const fs = require('fs');
@@ -195,10 +195,10 @@ async function run(opts) {
   // Lazily require so --help works without the serialport native module.
   let SerialStack;
   try {
-    SerialStack = require('../relay/SerialStack');
+    SerialStack = require('./SerialStack');
   } catch (error) {
     console.error('\n\u274C ERROR: could not load the serial stack.');
-    console.error('Install the relay dependencies first:\n\n  cd relay && npm install\n');
+    console.error('Install dependencies first:\n\n  cd server && npm install\n');
     process.exit(1);
   }
 

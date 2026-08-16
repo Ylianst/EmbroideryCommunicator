@@ -39,16 +39,11 @@ one disconnects.
 
 ## Installation
 
-The server depends on `ws`, and the machine communication code it reuses depends
-on `serialport`. Install both:
+The server is self-contained — it bundles the serial stack. Install its
+dependencies (`ws` and `serialport`):
 
 ```bash
-# Serial protocol dependencies (serialport)
-cd relay
-npm install
-
-# Server dependencies (ws)
-cd ../server
+cd server
 npm install
 ```
 

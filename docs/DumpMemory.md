@@ -20,18 +20,17 @@ launching the GUI.
 
 ## Installation
 
-The tool reuses the machine communication code from the [relay](../relay), which
-depends on `serialport`. Install those dependencies once:
+The tool lives in the [server](../server) folder, which is self-contained and
+bundles the serial stack (it depends on `serialport`). Install the server
+dependencies once:
 
 ```bash
-cd relay
+cd server
 npm install
 ```
 
 > The first `serialport` build can take a few minutes. On Linux you may need
 > build tools first: `sudo apt-get install build-essential`.
-
-No separate install is needed in the `server` folder to run this tool.
 
 ## Command-line switches
 
@@ -153,8 +152,8 @@ On completion:
   file. The tool exits with a non-zero status and reports how much was saved.
 - **"Missing or invalid --module".** Use `sewing` or `embroidery` (or one of the
   accepted aliases listed above).
-- **"could not load the serial stack".** Install the relay dependencies first:
-  `cd relay && npm install`.
+- **"could not load the serial stack".** Install the server dependencies first:
+  `cd server && npm install`.
 - **Port is busy / cannot open.** Another program is using the serial port.
   Close the desktop app, relay, or server and try again.
 

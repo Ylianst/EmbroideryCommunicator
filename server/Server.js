@@ -239,10 +239,10 @@ function runServer() {
     'ws',
     'Install server dependencies with:\n\n  cd server && npm install\n',
   );
-  // RelaySession pulls in the serialport-backed SerialStack from ../relay.
+  // RelaySession pulls in the bundled serialport-backed SerialStack.
   const RelaySession = requireOrExplain(
     './RelaySession',
-    'Install the relay dependencies with:\n\n  cd relay && npm install\n',
+    'Install dependencies with:\n\n  cd server && npm install\n',
   );
 
   if (!fs.existsSync(WEB_ROOT)) {

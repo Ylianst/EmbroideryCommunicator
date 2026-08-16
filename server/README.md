@@ -18,8 +18,8 @@ Browser (Flutter web app)  <--HTTP-->  Embroidery Server  <--serial-->  Machine
 - The Flutter app detects that flag on startup and automatically connects back
   to the server's WebSocket (`/ws`) instead of asking for a relay host/port.
 - The WebSocket uses the same framed protocol as the TCP relay
-  (see `../docs/TcpProtocol.md`), reusing `../relay/SerialStack.js` and
-  `../relay/TcpProtocol.js` for the machine communication.
+  (see `../docs/TcpProtocol.md`), using the bundled `SerialStack.js` and
+  `TcpProtocol.js` for the machine communication.
 
 Only **one** machine session is allowed at a time (the serial port is a single
 physical resource); additional WebSocket clients are rejected until the active
@@ -33,16 +33,11 @@ one disconnects.
 
 ## Install
 
-The server depends on `ws`, and the relay code it reuses depends on
-`serialport`. Install both:
+The server is self-contained (it bundles the serial stack). Install its
+dependencies (`ws` and `serialport`):
 
 ```bash
-# Serial protocol dependencies (serialport)
-cd relay
-npm install
-
-# Server dependencies (ws)
-cd ../server
+cd server
 npm install
 ```
 
@@ -123,7 +118,7 @@ serial — the command-line equivalent of the app's Memory Dump feature. It read
 256-byte blocks and retries each block automatically on error (10 attempts, 3s
 apart) while showing live progress.
 
-Requires the relay dependencies (`cd relay && npm install`) for serial access.
+Requires the server dependencies (`cd server && npm install`) for serial access.
 
 ```bash
 # Dump the sewing machine to an auto-named file
