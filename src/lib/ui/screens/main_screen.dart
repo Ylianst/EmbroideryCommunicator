@@ -21,6 +21,7 @@ import '../about.dart';
 import '../app_exit.dart';
 import '../update_dialog.dart';
 import '../widgets/app_menu.dart';
+import '../widgets/display_tab.dart';
 import '../widgets/embroidery_file_tile.dart';
 import 'debug_screen.dart';
 import 'memory_dump_screen.dart';
@@ -487,6 +488,7 @@ class _ConnectedView extends ConsumerWidget {
     final showPcCard = session.pcCardPresent;
     final tabs = <Tab>[
       const Tab(text: 'General'),
+      const Tab(text: 'Display'),
       const Tab(text: 'Embroidery Module'),
       if (showPcCard) const Tab(text: 'PC Card'),
     ];
@@ -508,6 +510,7 @@ class _ConnectedView extends ConsumerWidget {
             child: TabBarView(
               children: [
                 _GeneralTab(session: session),
+                const DisplayTab(),
                 _FilePanel(
                   title: 'Embroidery module',
                   location: StorageLocation.embroideryModuleMemory,

@@ -308,6 +308,29 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
         : controller.engine.read(address);
   }
 
+  /// Reads [length] bytes at [address], returning the raw bytes or null on
+  /// failure. Unlike [dumpMemory] this does not toggle the global busy flag,
+  /// so lightweight polling (e.g. the live display) does not flash the app-wide
+  /// progress bar.
+  Future<Uint8List?> readMemoryRange(int address, int length) async {
+    final engine = _controller?.engine;
+    if (engine == null) return null;
+    final result = await engine.readMemoryBlock(address, length);
+    return result.success ? result.binaryData : null;
+  }
+
+  /// Returns the machine's checksum (L command) for [length] bytes at
+  /// [address], or null on failure. Used to cheaply detect memory changes.
+  Future<int?> memorySum(int address, int length) async {
+    final engine = _controller?.engine;
+    if (engine == null) return null;
+    final result = await engine.sum(address, length);
+    if (result.success && result.response != null) {
+      return int.tryParse(result.response!.trim(), radix: 16);
+    }
+    return null;
+  }
+
   bool _dumpCancelled = false;
   void cancelDump() => _dumpCancelled = true;
 

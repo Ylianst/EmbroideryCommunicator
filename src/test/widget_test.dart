@@ -22,7 +22,7 @@ class _FakePortDiscovery implements PortDiscovery {
 }
 
 void main() {
-  testWidgets('shows the connect screen with available ports',
+  testWidgets('connect dialog lists available ports',
       (WidgetTester tester) async {
     await tester.pumpWidget(
       ProviderScope(
@@ -34,9 +34,16 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Embroidery Communicator'), findsOneWidget);
-    expect(find.text('Connect to your machine'), findsOneWidget);
+    // While disconnected the app bar shows the product name and a Connect action.
+    expect(find.text('Embroidery Communicator'), findsWidgets);
     expect(find.widgetWithText(FilledButton, 'Connect'), findsOneWidget);
+
+    // Opening the connect dialog reveals the serial port picker.
+    await tester.tap(find.widgetWithText(FilledButton, 'Connect'));
+    await tester.pump(); // build the dialog
+    await tester.pump(const Duration(milliseconds: 300)); // ports stream + anim
+
+    expect(find.text('Connect to machine'), findsOneWidget);
     expect(find.byType(DropdownButtonFormField<String>), findsOneWidget);
   });
 }
