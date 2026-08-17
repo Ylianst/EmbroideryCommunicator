@@ -163,26 +163,27 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
   /// (when [useWebSocket] is set, or on web where TCP is unavailable).
   Future<void> connectNetwork(String host, int port,
       {bool useWebSocket = false}) async {
-    final RelayConnection inner = useWebSocket
+    final RelayConnection base = useWebSocket
         ? WebSocketRelayConnection('ws://$host:$port')
         : createTcpRelayConnection(host, port);
-    await _connectRelay(inner, label: host);
+    await _connectRelay(base, host);
   }
 
-  /// Connects to a relay reachable at a full WebSocket URL (e.g. when the app
-  /// is served in server-hosted mode and relays back to its own host).
-  Future<void> connectRelayUrl(String wsUrl) async {
-    await _connectRelay(WebSocketRelayConnection(wsUrl), label: wsUrl);
-  }
+  /// Connects to an embroidery relay using a full WebSocket URL (e.g. from the
+  /// hosted server config).
+  Future<void> connectRelayUrl(String wsUrl) =>
+      _connectRelay(WebSocketRelayConnection(wsUrl), wsUrl);
 
-  Future<void> _connectRelay(RelayConnection inner, {required String label}) async {
+  Future<void> _connectRelay(RelayConnection base, String label) async {
     if (state.status == ConnectionState.connecting || state.isConnected) return;
     state = state.copyWith(
         status: ConnectionState.connecting, message: 'Connecting to $label…');
 
     ref.read(trafficLogProvider).resetCounters();
-    final RelayConnection connection =
-        TrafficTapConnection(inner, ref.read(trafficLogProvider));
+    final RelayConnection connection = TrafficTapConnection(
+      base,
+      ref.read(trafficLogProvider),
+    );
     try {
       await connection.connect();
     } catch (e) {
@@ -308,27 +309,23 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
         : controller.engine.read(address);
   }
 
-  /// Reads [length] bytes at [address], returning the raw bytes or null on
-  /// failure. Unlike [dumpMemory] this does not toggle the global busy flag,
-  /// so lightweight polling (e.g. the live display) does not flash the app-wide
-  /// progress bar.
+  /// Reads exactly [length] bytes at [address], or null on failure.
   Future<Uint8List?> readMemoryRange(int address, int length) async {
     final engine = _controller?.engine;
-    if (engine == null) return null;
+    if (engine == null || length <= 0) return null;
     final result = await engine.readMemoryBlock(address, length);
-    return result.success ? result.binaryData : null;
+    if (!result.success || result.binaryData == null) return null;
+    return result.binaryData;
   }
 
-  /// Returns the machine's checksum (L command) for [length] bytes at
-  /// [address], or null on failure. Used to cheaply detect memory changes.
+  /// Returns the machine's checksum over [length] bytes at [address], or null
+  /// on failure. Used for cheap change detection without transferring data.
   Future<int?> memorySum(int address, int length) async {
     final engine = _controller?.engine;
-    if (engine == null) return null;
+    if (engine == null || length <= 0) return null;
     final result = await engine.sum(address, length);
-    if (result.success && result.response != null) {
-      return int.tryParse(result.response!.trim(), radix: 16);
-    }
-    return null;
+    if (!result.success || result.response == null) return null;
+    return int.tryParse(result.response!.trim(), radix: 16);
   }
 
   bool _dumpCancelled = false;

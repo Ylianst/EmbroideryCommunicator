@@ -25,6 +25,7 @@ import '../widgets/display_tab.dart';
 import '../widgets/embroidery_file_tile.dart';
 import 'debug_screen.dart';
 import 'memory_dump_screen.dart';
+import 'memory_trace_dialog.dart';
 import 'memory_viewer_screen.dart';
 import 'viewer_screen.dart';
 
@@ -304,6 +305,12 @@ class _MainScreenState extends ConsumerState<MainScreen> {
             label: 'Memory Dump',
             onPressed: session.isConnected
                 ? () => _openTool(context, 'dump')
+                : null,
+          ),
+          AppMenuAction(
+            label: 'Memory Trace\u2026',
+            onPressed: session.isConnected
+                ? () => showMemoryTraceDialog(context)
                 : null,
           ),
         ],
