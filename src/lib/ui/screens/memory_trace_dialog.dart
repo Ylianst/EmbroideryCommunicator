@@ -13,6 +13,17 @@ const int _defaultLength = 64;
 final String _defaultAddress =
     (_memorySize - 0x100).toRadixString(16).toUpperCase().padLeft(6, '0');
 
+/// How the captured readings are visualised.
+enum _TraceMode {
+  hex('HEX'),
+  byteGraph('Byte Graph'),
+  wordLGraph('WordL Graph'),
+  wordHGraph('WordH Graph');
+
+  const _TraceMode(this.label);
+  final String label;
+}
+
 /// Shows the live memory-trace dialog. Polling stops automatically when the
 /// dialog is dismissed.
 Future<void> showMemoryTraceDialog(BuildContext context) {
@@ -40,6 +51,7 @@ class _MemoryTraceDialogState extends ConsumerState<MemoryTraceDialog> {
   int _length = _defaultLength;
   double _pollMs = 500;
   bool _running = false;
+  _TraceMode _mode = _TraceMode.hex;
   String? _error;
 
   /// Bumped on stop/dispose to cancel any in-flight polling loop.
@@ -100,12 +112,9 @@ class _MemoryTraceDialogState extends ConsumerState<MemoryTraceDialog> {
               );
       if (gen != _gen || !mounted) return;
       if (bytes == null) {
-        setState(() {
-          _error = 'Read failed at 0x${address.toRadixString(16).toUpperCase()}';
-          _running = false;
-        });
-        _gen++;
-        return;
+        // Transient read failure: skip this reading and try again.
+        await Future.delayed(Duration(milliseconds: _pollMs.round()));
+        continue;
       }
       setState(() {
         _rows.insert(0, bytes);
@@ -198,6 +207,17 @@ class _MemoryTraceDialogState extends ConsumerState<MemoryTraceDialog> {
         const SizedBox(height: 8),
         Row(
           children: [
+            const Text('View: '),
+            DropdownButton<_TraceMode>(
+              value: _mode,
+              onChanged: (v) =>
+                  setState(() => _mode = v ?? _TraceMode.hex),
+              items: [
+                for (final m in _TraceMode.values)
+                  DropdownMenuItem(value: m, child: Text(m.label)),
+              ],
+            ),
+            const SizedBox(width: 16),
             const Icon(Icons.speed, size: 20),
             const SizedBox(width: 8),
             Text('Poll: ${_pollMs.round()} ms'),
@@ -227,6 +247,9 @@ class _MemoryTraceDialogState extends ConsumerState<MemoryTraceDialog> {
               ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
         ),
       );
+    }
+    if (_mode != _TraceMode.hex) {
+      return _buildGraph(context);
     }
     return Container(
       decoration: BoxDecoration(
@@ -261,6 +284,61 @@ class _MemoryTraceDialogState extends ConsumerState<MemoryTraceDialog> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildGraph(BuildContext context) {
+    final theme = Theme.of(context);
+    final isWord = _mode != _TraceMode.byteGraph;
+    final seriesCount = isWord ? _length ~/ 2 : _length;
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      clipBehavior: Clip.antiAlias,
+      padding: const EdgeInsets.all(8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: CustomPaint(
+              painter: _GraphPainter(
+                rows: _rows,
+                mode: _mode,
+                seriesCount: seriesCount,
+                gridColor: theme.dividerColor,
+                axisColor: theme.colorScheme.onSurfaceVariant,
+              ),
+              child: const SizedBox.expand(),
+            ),
+          ),
+          const SizedBox(height: 8),
+          _buildLegend(context, seriesCount, isWord),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLegend(BuildContext context, int count, bool isWord) {
+    final theme = Theme.of(context);
+    return Wrap(
+      spacing: 12,
+      runSpacing: 4,
+      children: [
+        for (var i = 0; i < count; i++)
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(width: 12, height: 12, color: _seriesColor(i, count)),
+              const SizedBox(width: 4),
+              Text(
+                isWord ? 'W$i' : 'B$i',
+                style: theme.textTheme.bodySmall,
+              ),
+            ],
+          ),
+      ],
     );
   }
 }
@@ -373,4 +451,101 @@ class _TraceRow extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Distinct color for series [index] out of [count], spread around the hue wheel.
+Color _seriesColor(int index, int count) {
+  final hue = count <= 1 ? 210.0 : (index / count) * 360.0;
+  return HSVColor.fromAHSV(1, hue, 0.72, 0.95).toColor();
+}
+
+/// Plots each reading over time: one series per byte (Byte Graph) or per 16-bit
+/// word (WordL/WordH Graph). Newest samples are on the right.
+class _GraphPainter extends CustomPainter {
+  _GraphPainter({
+    required this.rows,
+    required this.mode,
+    required this.seriesCount,
+    required this.gridColor,
+    required this.axisColor,
+  });
+
+  /// Readings, newest first.
+  final List<Uint8List> rows;
+  final _TraceMode mode;
+  final int seriesCount;
+  final Color gridColor;
+  final Color axisColor;
+
+  double _value(Uint8List row, int series) {
+    switch (mode) {
+      case _TraceMode.byteGraph:
+        return series < row.length ? row[series].toDouble() : 0;
+      case _TraceMode.wordLGraph:
+        final lo = 2 * series;
+        final hi = lo + 1;
+        if (hi >= row.length) return 0;
+        return (row[lo] | (row[hi] << 8)).toDouble();
+      case _TraceMode.wordHGraph:
+        final hi = 2 * series;
+        final lo = hi + 1;
+        if (lo >= row.length) return 0;
+        return ((row[hi] << 8) | row[lo]).toDouble();
+      case _TraceMode.hex:
+        return 0;
+    }
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final plot = Rect.fromLTRB(8, 8, size.width - 8, size.height - 8);
+    final maxVal = mode == _TraceMode.byteGraph ? 255.0 : 65535.0;
+
+    final gridPaint = Paint()
+      ..color = gridColor
+      ..strokeWidth = 0.5;
+    for (var i = 0; i <= 4; i++) {
+      final y = plot.top + plot.height * i / 4;
+      canvas.drawLine(Offset(plot.left, y), Offset(plot.right, y), gridPaint);
+    }
+
+    final n = rows.length;
+    if (n == 0) return;
+
+    double xForSample(int i) {
+      if (n == 1) return plot.right;
+      return plot.right - (i / (n - 1)) * plot.width;
+    }
+
+    double yForValue(double v) {
+      final f = (v / maxVal).clamp(0.0, 1.0);
+      return plot.bottom - f * plot.height;
+    }
+
+    for (var s = 0; s < seriesCount; s++) {
+      final color = _seriesColor(s, seriesCount);
+      final linePaint = Paint()
+        ..color = color
+        ..strokeWidth = 1.4
+        ..style = PaintingStyle.stroke;
+      final dotPaint = Paint()
+        ..color = color
+        ..style = PaintingStyle.fill;
+      final path = Path();
+      for (var i = 0; i < n; i++) {
+        final x = xForSample(i);
+        final y = yForValue(_value(rows[i], s));
+        if (i == 0) {
+          path.moveTo(x, y);
+        } else {
+          path.lineTo(x, y);
+        }
+        canvas.drawCircle(Offset(x, y), 1.8, dotPaint);
+      }
+      canvas.drawPath(path, linePaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _GraphPainter oldDelegate) => true;
 }
