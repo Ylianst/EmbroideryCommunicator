@@ -1,6 +1,59 @@
 const { SerialPort } = require('serialport');
 const { EventEmitter } = require('events');
 
+/**
+ * Command letters understood by the Bernina boot loader (v2 BIOS 1.10 and
+ * v3 BIOS 1.20) and by the running application, which services the same command
+ * set through the boot ROM. See docs/SerialProtocol.md for the full byte
+ * level reference; both ROM revisions share this command layer.
+ *
+ * Every command is a single ASCII letter. Addresses are 6 hex digits (24-bit),
+ * data bytes are 2 hex digits, the machine echoes each character it accepts,
+ * and most replies end in a status byte (see STATUS).
+ */
+const COMMANDS = Object.freeze({
+  IDENTIFY: 'I',       // identity banner
+  READ_BYTE: 'r',      // read 1 byte (hex)
+  READ_BLOCK: 'R',     // read 32 bytes (hex)
+  DUMP_BLOCK: 'N',     // read 256 raw bytes
+  WRITE_BYTE: 'w',     // write 1 byte (verified)
+  WRITE_STREAM: 'W',   // write stream, '?' ends it
+  ACK_PING: 'K',       // ack/ping -> 'O'
+  GO: 'G',             // jump to application (alt entry)
+  RESET: 'X',          // restart the boot ROM
+  HALT: 'H',           // halt, keep the link alive
+  START_APP: 'S',      // start application (primary entry)
+  CONFIRM: 'Y',        // confirm (host then sends 'Q')
+  VERSION: 'V',        // BIOS version byte
+  BAUD: 'J',           // set SCI bit rate (2 hex BRR)
+  TO_PC_PORT: 'T',     // "TrME" switch to SCI1
+  FLASH_BYTE: 'Z',     // program 1 byte into flash
+  DOWNLOAD: 'P',       // PB bank / PS sector loader
+  MODIFY: 'M',         // stream bytes into flash
+  CHECKSUM: 'L'        // 32-bit sum of a range
+});
+
+/** Single-byte status / error replies from the machine. */
+const STATUS = Object.freeze({
+  OK: 'O',              // success
+  NEGATIVE: 'N',        // refused / verify failed
+  VERIFY_FAIL: 'V',     // not writable flash / no verify
+  UNKNOWN_COMMAND: 'Q', // unknown command letter
+  BAD_HEX: '?',         // non-hex where hex expected
+  LINE_ERROR: '!'       // serial line error (NAK)
+});
+
+/**
+ * Low-level driver for the Bernina character-echo serial protocol.
+ *
+ * Implements the full boot-loader command set reconstructed in
+ * docs/SerialProtocol.md: memory access
+ * (read/readByte/largeRead/write/writeByte/upload/sum), identity/status
+ * (identify/biosVersion/ping), link control (resync/upgradeSpeed and the
+ * embroidery session start/stop), and the DANGEROUS boot-loader commands
+ * (confirm/flashByte/modifyFlash/downloadBank/startApplication/go/
+ * resetBootRom/halt) that reprogram firmware or transfer execution.
+ */
 class SerialStack extends EventEmitter {
   constructor(portPath = '/dev/ttyUSB0', baudRate = 19200) {
     super();
@@ -763,7 +816,8 @@ class SerialStack extends EventEmitter {
       const firstByteHex = data.substring(0, 2);
       const firstByte = parseInt(firstByteHex, 16);
       
-      // Session is open if first byte not 0x84
+      // Session is closed when the first bytes read the 0xB4A5 sentinel;
+      // any other value means a session is open.
       const isOpen = firstByte !== 0xB4;
       console.log(`Embroidery session status: ${isOpen ? 'OPEN' : 'CLOSED'} (first byte: 0x${firstByteHex})`);
       
@@ -889,6 +943,202 @@ class SerialStack extends EventEmitter {
     }
   }
 
+  // ==========================================================================
+  // Full boot-loader command set (v2/v3). See docs/SerialProtocol.md.
+  // The read/identify/version/ping/confirm commands are safe; the flash and
+  // execution-control commands are DANGEROUS and unused in normal operation.
+  // ==========================================================================
+
+  /**
+   * Read a single byte (r + 6 hex). Where read() always returns 32 bytes, this
+   * returns exactly one, as 2 HEX characters.
+   * @param {string} address - 6 character HEX address
+   * @returns {Promise<string>} - 2 HEX characters
+   */
+  async readByte(address) {
+    if (address.length !== 6) throw new Error('Address must be 6 characters');
+    await this.sendCommand(`r${address.toUpperCase()}`);
+    const response = await this.readBytes(3); // 2 hex + 'O'
+    if (response[2] !== 'O') {
+      throw new Error(`Invalid response terminator: expected 'O', got '${response[2]}'`);
+    }
+    return response.substring(0, 2);
+  }
+
+  /**
+   * Write a single byte (w + 6 hex + 2 hex) with machine read-back verify.
+   * Resolves on 'O', throws on 'N' (verify failed).
+   * @param {string} address - 6 character HEX address
+   * @param {string} value - 2 character HEX byte
+   */
+  async writeByte(address, value) {
+    if (address.length !== 6) throw new Error('Address must be 6 characters');
+    if (value.length !== 2) throw new Error('Value must be 2 HEX characters');
+    await this.sendCommand(`w${address.toUpperCase()}${value.toUpperCase()}`);
+    const status = await this.readChar();
+    if (status !== 'O') {
+      throw new Error(`Write not verified (got '${status}', expected 'O')`);
+    }
+  }
+
+  /**
+   * Read the boot ROM identity banner (I). Returns the three banner lines
+   * joined by ' | ' (e.g. "BERNINA Electronic AG | BiosVersion: 1.20 | July 97").
+   * @returns {Promise<string>}
+   */
+  async identify() {
+    await this.sendCommand('I');
+    // Banner: three carriage-return-terminated lines.
+    let banner = '';
+    let crs = 0;
+    while (crs < 3) {
+      const ch = await this.readChar();
+      if (ch === '\r') crs++;
+      banner += ch;
+    }
+    return banner.split('\r').map(l => l.trim()).filter(l => l.length > 0).join(' | ');
+  }
+
+  /**
+   * Read the boot ROM BIOS version byte (V). 0x0C = v3 (1.20), 0x0B = v2 (1.10);
+   * this is the reliable way to tell the two boot ROMs apart over the wire.
+   * @returns {Promise<number>} - the version byte value
+   */
+  async biosVersion() {
+    await this.sendCommand('V');
+    const hex = await this.readBytes(2); // two version nibbles, no status byte
+    return parseInt(hex, 16);
+  }
+
+  /**
+   * Ping the machine (K); it replies 'O' and changes no protocol state. Note
+   * the machine answers 'O' rather than echoing 'K', so sendCommand is not used.
+   * @returns {Promise<boolean>}
+   */
+  async ping() {
+    await this._flushSerialBuffer();
+    await this.writeChar('K');
+    const status = await this.readChar();
+    if (status !== 'O') {
+      throw new Error(`Ping not acknowledged (got '${status}', expected 'O')`);
+    }
+    return true;
+  }
+
+  /**
+   * Confirm to the machine (Y then Q), raising its "confirmed" flag.
+   * @returns {Promise<boolean>}
+   */
+  async confirm() {
+    await this.sendCommand('YQ');
+    return true;
+  }
+
+  // ---- DANGEROUS: firmware programming and execution control ---------------
+  // These reprogram firmware or hand over execution and can brick a machine.
+
+  /**
+   * Program a single byte into flash (Z + 6 hex + 2 hex). Resolves on 'O',
+   * throws on 'V' (bank not writable flash, or programming did not verify).
+   * DANGEROUS - modifies firmware.
+   */
+  async flashByte(address, value) {
+    if (address.length !== 6) throw new Error('Address must be 6 characters');
+    if (value.length !== 2) throw new Error('Value must be 2 HEX characters');
+    await this.sendCommand(`Z${address.toUpperCase()}${value.toUpperCase()}`);
+    const status = await this.readChar();
+    if (status !== 'O') {
+      throw new Error(`Flash write failed (got '${status}', expected 'O')`);
+    }
+  }
+
+  /**
+   * Stream bytes into flash from an address (M), committing each 256-byte page
+   * as the cursor crosses it and on completion. DANGEROUS.
+   * @param {string} address - 6 character HEX start address
+   * @param {Buffer|string} data - bytes to program
+   */
+  async modifyFlash(address, data) {
+    if (address.length !== 6) throw new Error('Address must be 6 characters');
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data, 'latin1');
+    if (buf.length === 0) throw new Error('Data cannot be empty');
+    await this._flushSerialBuffer();
+    // M + address, each character echoed.
+    for (const ch of `M${address.toUpperCase()}`) {
+      await this.writeChar(ch);
+      const echo = await this.readChar();
+      if (echo !== ch) throw new Error(`Modify echo mismatch: sent '${ch}', got '${echo}'`);
+    }
+    // Stream the data as HEX pairs, each character echoed. A 'V' means the
+    // bank is not writable flash.
+    for (const b of buf) {
+      const hex = b.toString(16).toUpperCase().padStart(2, '0');
+      for (const ch of hex) {
+        await this.writeChar(ch);
+        const echo = await this.readChar();
+        if (echo === 'V') throw new Error('Modify rejected (V) - not writable flash');
+        if (echo !== ch) throw new Error(`Modify echo mismatch: sent '${ch}', got '${echo}'`);
+      }
+    }
+    // Any non-hex character commits the final page and ends the command.
+    await this.writeChar('?');
+    await this.readChar();
+  }
+
+  /**
+   * Bulk-program a whole 64 KB flash bank (PB). DANGEROUS and advanced.
+   * @param {string} bank - 2 character HEX bank number
+   * @param {Buffer[]} pages - 256-byte pages, programmed in order
+   * @returns {Promise<boolean>}
+   */
+  async downloadBank(bank, pages) {
+    if (bank.length !== 2) throw new Error('Bank must be 2 HEX characters');
+    if (!Array.isArray(pages) || pages.length === 0) {
+      throw new Error('No pages to program');
+    }
+    for (const p of pages) {
+      if (!Buffer.isBuffer(p) || p.length !== 256) {
+        throw new Error('Every page must be a 256-byte Buffer');
+      }
+    }
+    await this.sendCommand(`PB${bank.toUpperCase()}`);
+    const ready = await this.readChar(); // 'O' when ready
+    if (ready !== 'O') throw new Error(`Bank download not ready (got '${ready}')`);
+    let failures = 0;
+    for (const page of pages) {
+      const req = await this.readChar(); // 'E' = send a page
+      if (req !== 'E') throw new Error(`Expected page request 'E', got '${req}'`);
+      await this.writeChar('Y'); // a page follows
+      const yes = await this.readChar(); // machine confirms with 'Y'
+      if (yes !== 'Y') throw new Error(`Expected 'Y' confirm, got '${yes}'`);
+      await this._writeBytes(page);
+      const status = await this.readChar(); // 'O'/'V' status (lags one page)
+      if (status === 'V') failures++;
+    }
+    // Final 'E' request; any non-'Y' answer ends the stream (machine acks 'N').
+    const finalReq = await this.readChar();
+    if (finalReq === 'E') {
+      await this.writeChar('N');
+      await this.readChar();
+    }
+    if (failures > 0) {
+      throw new Error(`Bank download finished with ${failures} verify failure(s)`);
+    }
+    return true;
+  }
+
+  /** Start the application via its primary entry (S). Hands over execution. DANGEROUS. */
+  async startApplication() { await this.sendCommand('S'); }
+
+  /** Jump to the application via its alternate entry (G). DANGEROUS. */
+  async go() { await this.sendCommand('G'); }
+
+  /** Restart the boot ROM (X); the machine re-announces "BOS". DANGEROUS. */
+  async resetBootRom() { await this.sendCommand('X'); }
+
+  /** Halt the machine (H) while keeping the serial link alive. DANGEROUS. */
+  async halt() { await this.sendCommand('H'); }
+
   /**
    * Helper method to convert HEX string to ASCII
    */
@@ -914,5 +1164,8 @@ class SerialStack extends EventEmitter {
     return result;
   }
 }
+
+SerialStack.COMMANDS = COMMANDS;
+SerialStack.STATUS = STATUS;
 
 module.exports = SerialStack;

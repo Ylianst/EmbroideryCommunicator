@@ -1,224 +1,755 @@
-# Low-Level Serial Protocol
+# Serial Protocol Reference — v2 & v3 Boot Loaders (Complete Command Set)
 
-This is the serial protocol between "software" and "machine". The machine starts at 19200 baud, but the software will instruct it to move to 57600 baud. All serial communication is N,8,1 with no Handshake, so CTS/DTS does not play a factor. The protocol is generally ASCII based except when binary data is sent.
+This document is a practical, byte-level reference for **every** low-level serial
+command the Bernina Artista 180 understands, written for someone building a
+serial application that talks to the machine.
 
-## Bernina CPU
+> **Scope: this covers both the v2 and v3 boot loaders.** The command layer is,
+> byte for byte, the **same** across both ROMs — the 19 commands, their
+> arguments, their replies and every status byte are identical. The two ROMs
+> differ only in a handful of places around the handshake and the version
+> banner:
+>
+> - **v2** — BIOS version 1.10 / "Mai 97", `V` byte `0B`. This is the ROM in the
+>   dump that identifies as `NMMV02.08`.
+> - **v3** — BIOS version 1.20 / "July 97", `V` byte `0C`.
+>
+> See **§0 — Differences between the v2 and v3 boot loaders** for the complete
+> list. Where a command's behaviour or reply differs between the two ROMs, the
+> difference is called out inline.
 
-- The Bernina Artista uses a Hitachi H8 CPU. CPU part number is H8/3003, HD6413003F16.
-- Programming Manual: https://www.renesas.com/en/document/gde/h8300-programming-manual
-- The CPU manual is at: https://www.renesas.com/en/document/mah/h83003-hardware-manual
-- CPU emulator: http://bitsavers.informatik.uni-stuttgart.de/test_equipment/hp/64700/64784-97011_H8_3003_Softkey.PDF
-- Documents and tools: https://www.renesas.com/en/products/h8-3003?tab=documentation
-- GCC compiler support: https://h8300-hms.sourceforge.net/
-- Memory map: 0FFD10 - 0FFF0F, page 501 of the manual.
-- The DMA controller regs are 0xFFFF20 - 0xFFFF5F.
+It complements the two existing documents:
 
-## General Concepts
+- [SerialProtocol-old.md](SerialProtocol-old.md) — the original field notes,
+  describing the commands that were observed on the wire.
+- [HighLevel.md](HighLevel.md) — the higher-level operations (embroidery
+  sessions, file transfer) built on top of these primitives.
 
-- The software sends commands to the machine one character at a time and waits for the same character to be echoed back before sending the next character.
-- The software does not echo back traffic from the machine, only the machine echoes software.
-- If the machine does not understand a character from the software, it will send back the letter "Q", "?" or "!", otherwise it will echo back the character that the machine sent.
-- If there is a problem, the software must send "RF?" and the machine will echo back "RF?", you are then ready to send the next command. If the software starts sending a command and gets a "Q", "?" or "!" echo back, you have to stop and send a "RF?" waiting for each character to be echoed before resuming. "RF?" can also be used as an command to detect that the machine is listening on the serial bus before sending other commands.
-- The software seems to sometimes generate invalid Read commands, they are R commands followed by bytes that are not valid for a HEX value. In this case, the machine returns error response and the software seems to try again with a valid read value.
-- When the machine first starts, it will be at 19200 bauds and send out "BOSN" (In HEX: 42 4F 53 4E)
-- When the machine turned off, I see a single 0x00
-- The sewing machine and embroidery modules have there own CPU and you can select to which one to communicate with on the serial port using the Embroidery Session Start/Stop commands.
+Everything here was reconstructed from the boot ROMs. The authoritative sources
+are the rewritten-in-C boot ROMs — in particular the command dispatcher
+`state_idle()` and the state machine `serial_service()`:
 
-## Baud Rate Detection and Change
+- **v3**: `sim_h83003/bernina_artista180/bootrom/boot.c`.
+- **v2**: `sim_h83003/bernina_artista180/v2bootrom/boot.c`, with the wire
+  behaviour captured in `v2bootrom/protocol_v2.json`.
 
-The machine starts at 19200 bauds but can be instructed to change to 57600 baud. When the software first starts, it had to figure out what baud rate the machine is at. The software will send data in 4 groups at different baud rates.
+> **Where these commands run.** The same routine that decodes these commands in
+> the boot ROM (`serial_service`) is also called by the running application
+> through its main loop (boot ROM vector *slot 1*). So this command set is live
+> **both** while the boot ROM is waiting for firmware **and** while the normal
+> sewing/embroidery application is running. This is why a host can read memory,
+> checksum, and write while the machine is in normal use.
 
-```
-52 52 52 52 52                 - at 19200 bauds (RRRRR)
-52 52 52 02 66 03 6B 52 52 52  - at 57600 bauds
-52 52 52 02 66 03 6B 52 52 52  - at 115200 bauds
-52 52 52 52 52                 - at 4800 bauds
-```
+---
 
-The software is trying 4 different baud rates to see if the machine will answer on one of them. It's trying to send the "RF?" command. If the software gets back a "RF?" echo, it will start talking to the machine. Once the machine is detected we can change to 57600 baud using the "TrMEJ05" command like this:
+## 0. Differences between the v2 and v3 boot loaders
 
-TrMEJ05   - Echoed back causes baudrate change to 57600 bauds.
--- Baudrate change occurs, the machine will send "BOS" (42 4F 53) at 57600 bauds.
-EBYQ      - Echoed back + "O", which is the confirmation that we moved over to the new speed.
+The v3 boot loader is a near-exact superset of v2. The 19 commands, their
+arguments, their replies and every status byte are **identical**. The two ROMs
+differ only in the version banner and in a few handshake behaviours.
 
-After the machine sends "BOS" at 57600 bauds you have very little time to send the "EBYQ" confirmation or the machine will revert to sending "BOS" at 19200 bauds periodically (around every second). So, you may need to be quick to change baudrates and send "EBYQ" to the machine to keep it at the new speed. If the machine goes back to 19200 baud and sends "BOS" periodically, the machine is no longer is a resoverable state, even the original Windows XP software will not be able to talk to it anymore and so, you have to turn off/on the machine to have it reset to 19200 baud.
+| Area | v2 boot loader | v3 boot loader |
+| --- | --- | --- |
+| `I` banner | `BiosVersion: 1.10` / `Mai 97` | `BiosVersion: 1.20` / `July 97` |
+| `V` version byte | `0B` | `0C` |
+| SCI0 (embroidery) arm of the handshake | **absent** — boot ROM only brings up and listens on SCI1 | **present** — polls SCI0 silently as well as SCI1 |
+| Line errors during the handshake | **not cleared** each round | **cleared silently** each round |
+| Handshake reply with a latched line error | `EBM!` (stray `!`) | `EBM` |
 
-Once you are in 57600 baud speed, it's possible to go back to 19200 baud using the "TrMEJ04" with the same process as above. It looks like this speed commands are:
+### Why the two behavioural differences matter
 
-```
-"TrMEJ04" = 19200 bauds.
-"TrMEJ05" = 57600 bauds.
-```
+**1. SCI0 handshake path.** The v3 ROM brings up *both* serial channels and its
+handshake matches the `EB` claim on SCI0 **silently** as well as on SCI1. That
+means a v3 host tool can capture the machine by blindly sending `EB` on either
+channel. The v2 ROM only ever brings up and listens on **SCI1** (the PC port)
+during boot, so you **must** talk to it on SCI1 and it is good practice to wait
+for the `BOS` announcement first (see §10). The embroidery-module bridge (`T`
+command and the internal port bridge, §7) is the same on both ROMs and still
+works once the application is running — only the *boot handshake* is SCI1-only
+on v2.
 
-So you can switch to and from each baud rates. It's important to note that when switching baud rate you may also start a emdroidey module session at the same time. So, once you switch baud rates, you may want to do a "R57FF80" command to see what mode you are in. See "Emboidery Module Session Start" below.
+**2. Line errors during the handshake.** A latched receive error
+(framing / overrun / parity) is the ordinary state of a serial line at
+power-up. v3 clears it silently on every handshake round, so it recovers and
+answers a clean `EBM`. v2 does not, so a v2 machine that latches an error at
+reset answers the `EB` handshake with an **extra `!` byte** (`EBM!` instead of
+`EBM`), and on real H8/3003 hardware a latched overrun (ORER) stops the receiver
+until it is cleared — so a v2 machine can be **deaf for the entire handshake
+window** and then boot its application. This makes v3 more robust to a noisy
+line at connect time. Mitigation on v2: drive a clean idle line before
+connecting, and if the handshake misbehaves, power-cycle and retry rather than
+assuming the machine is absent.
 
-## The Protocol Reset Command
+Because `V` and the `I` banner move together, **`V` is the reliable way to tell
+the two ROMs apart over the wire**: `V0B` = v2, `V0C` = v3.
 
-The "RF?" command causes the machine to reset it's protocol state. If you send a command and get "Q", "?" or "!" as an echo back, something is not quite right and you may be stuck until the protocol reset command is sent, only then can you start sending more commands. This command can also be used to initially find the machine on the serial bus.
+---
 
-## The Read Command (R)
+## 1. Line settings
 
-A "Read" command will cause the machine with return 32 bytes of data starting at the address specified by the command. This is fixed, all "Read" commands return this ammount of data back. The read command starts with a capital R followed by 6 characters that are the address to the read. Here are two value examples:
+| Setting | Value |
+| --- | --- |
+| Framing | N, 8, 1 (8 data bits, no parity, 1 stop bit) |
+| Flow control | None (CTS/DTR/RTS ignored) |
+| Start-up baud | 19200 |
+| Fast baud | 57600 (switch with the `J` command, see §7) |
 
-```
-"R200100"  (52 32 30 30 31 30 30)
-"RFFFED9"
-```
+The machine has two physical serial channels (SCI0 and SCI1). SCI1 is the PC
+port; SCI0 reaches the embroidery module.
 
-- When receiving a "Read" command, the machine will respond with 65 characters. The data block is HEX encoded followed by the character "O". For example:
+- **v3** initialises and listens on **both** channels during boot.
+- **v2** initialises and listens on **SCI1 only** during boot — it never brings
+  SCI0 up.
 
-```
-"R200100" will return:
-"53524D5630332E30312000467269747A204765676175662041470D004F637420O"
+The `T` command and the internal port bridge (used for embroidery-module
+sessions) are present and unchanged on both ROMs; for ordinary use you talk to
+the PC port and everything below applies as written.
 
-"RFFFED9" will return:
-"8300330000000000000000000000000200000100000000000000000000000000O"
-```
+---
 
-## The Large Read Command (N)
+## 2. Wire conventions (read this first)
 
-In addition to the read command, there is a "Large Read" command that worked the same way as "Read", but return 256 bytes of binary encoded data instead of 32 bytes of HEX encoded data. The command in "N" on the serial protocol followed by 6 HEX characters for the address. Here are two examples:
+These rules apply to **all** commands. Get them right once and every command
+below behaves predictably.
 
-```
-"N0240F5" will return:
-"LisaV45Rev8.....................BlackBoardv45Rev61..............SwissBlock v45 rev6a............Zurichv45rev6a..................ALICE v6m Rev5 Firmware v3......BAMBOO v6m Rev8 Firmware v3.....Lg5060..........................Cs021...........................O"
+### 2.1 Every byte you send is echoed
 
-"N0241F5" will return:
-"Fl081...........................Nv772...........................Nv722...........................Nv799...........................Bd130...........................Bd115v2.........................Cr070...........................Cr060...........................O"
-```
+The machine echoes each character it accepts, one at a time, and only echoes
+traffic that *you* sent. **Send the next byte only after you have read the echo
+of the previous one.** A command's reply therefore always begins with the
+command letter itself, because the letter is echoed before the handler runs.
 
-Like the "Read" command, the "Large Read" command also completes the block with a capital "O". So, 256 characters of data are returned along with the ending capital "O".
+Two commands deviate: `K` echoes `O` instead of the letter, and any unknown
+letter is echoed as `Q` (see §2.4).
 
-When downloading a lot of data, the software will use the Large Read (N) command a lot, but if the last block that needs to be downloaded is 32 bytes of less, it will switch to used the Read (R) command to complete the download.
+### 2.2 Addresses and data are ASCII hex
 
-## The Write Command (W)
+- An **address** is 6 hex characters = a 24-bit address, most significant nibble
+  first. Example: `200100`.
+- A **data byte** is 2 hex characters.
+- A **length/count** is 6 hex characters.
+- Hex letters are **upper case** (`0`–`9`, `A`–`F`). Lower-case hex is not
+  accepted as a digit.
 
-It's also possible to write using the W command. Just like the read command, it's a W followed by 6 HEX characters for the address followed by the data to write in HEX and "?" to complete the command. Here are two examples of write commands:
+### 2.3 Reply / status bytes
 
-```
-"W0201E101?"
-"WFFFED00061?"
-```
+Commands that report an outcome end with a single status byte:
 
-The first command will write 0x01 to address 0x0201E1, the second command will write 0x0061 to address 0xFFFED0. There is no confirmation given that the write operation was a success, so often times the software with perform a read (R) operation after a set of writes to make sure the operation was a success.
+| Byte | Meaning |
+| --- | --- |
+| `O` (0x4F) | Success / OK |
+| `N` (0x4E) | Negative — operation refused or verify failed |
+| `V` (0x56) | Verify/flash failure — target is not writable flash, or programming did not verify |
 
-## The Upload Command (PS)
+### 2.4 Error bytes and how to recover
 
-In order to upload a lot of data from the software to the machine, the PS command is used. The command is "PS" followed by 4 HEX characters, there are the 4 starting HEX characters of the destination address, with 00 being added to complete the address. So, "PS028F" will upload 256 bytes of binary data at address 0x028F00. The sequence on the serial port is like this:
+If something goes wrong you will see one of three bytes come back **in place of
+the echo you expected**:
 
-- Software sends command "PS028F".
-- Machine replays with "OE".
-- Software sends 256 bytes of data.
-- Machines replays with "O".
+| Byte | Cause | What to do |
+| --- | --- | --- |
+| `Q` (0x51) | Unknown command letter (also a rejected handshake/confirm byte) | Resync with `RF?` (§2.5) |
+| `?` (0x3F) | A non-hex character was sent where a hex digit was expected; the command is aborted back to idle | The machine is already back at idle; resend the command |
+| `!` (0x21) | Serial line error (framing / overrun / parity) — a NAK | Resync with `RF?`, then resend |
 
-If a problem occurs, the machine sends "Q" back, software sends a series of "RF?" until it works and then tries again. Note that this command can compliment the Write (W) command that can be used to write at exact location. We will see the software use the Write command a few times until it gets to the next 256 byte memory boundary and then will use the Upload (PS) command.
+> On v2 the `!` NAK is also what you may see appended to the boot handshake
+> reply (`EBM!`) when a line error was latched at power-up — see §0 and §10.
 
-## The Sum Command (L)
+### 2.5 `RF?` — the resync / "are you there?" trick
 
-This command will return the sum of all memory bytes stating at a given address for a given length. The L command is followed by 12 characters in HEX format, the 6 first at the address and the next 6 are the length. The machine will reply with 8 HEX characters followed by "O" when competed. For example:
-
-```
-"L0240D5000360" will reply "00004CC9O"
-```
-
-This command tells the machine to start at position 0x0240D5 and sum the next 0x000360 bytes. In this case, the result is 0x4CC9. You can easily verify this by issuing a read command at for example 0x200100, you get this:
-
-```
-R200100 --> 4E4D4D5630332E303100456E676C6973682020202020004265726E696E612045
-```
-
-Then issue a Sum command for 0x200100, Length 1 like this: L200100000001. The response will be 0xAE since you sum only one byte. You can then issue the same Sum command with a lenght of 2, 3, 4... and confirm it's correct. This command is used as a checksum when downloading data.
-
-## Emboidery Module Session Start
-
-There is really two processors, the sewing machine and the enbroidery module. Both have their own CPU, RAM, software and more. When you send commands over the serial port, these commands may be directed at the sewing machine or the embroidery module. So, you have to be careful in what mode you are in. From the outside, when entering a embroidery session, the display will turn while and return to normal when you exit the session. So, you can tell right away what mode you are in.
-
-When irst starting up, you communicate with the sewing machine by default, but if you want to access the embroidery module, you need to open the communication path to the embroidery module first. If you read 0x57FF80 the first bytes will be 0xB4A5 if the emboidery session is not started. In this case, you can't read/write data to the embroidery module.
-
-To start the embroidery module communication, you need to send command "TrMEYQ" and get a "O" in return. If you don't get a "O", the embroidery module is not attached. Once the session started, you can read 0x57FF80 again to check the session state.
-
-```
-R57FF80 --> B4A5000020DF002B797D03700FCE0C08535332FF0370FFFFFFFFFFFFFFFFFFFF  (Session Closed)
-TrMEYQ  --> Replay with "O"
-R57FF80 --> 00CE800400CF80010000800403378004033704370704000A00F6F9FC07040010  (Session Open)
-```
-
-If the embroidery module session is started, you now read 0x00CE. Once the session is started, you can't start it again, so sending "TrMEYQ" again will not work (it will not return "O") also, once the session is open, you can't change the baudrate, that too will not return "O".
-
-Do not send the "TrMEYQ" again if the session is already opened. If you do that, you will not get a "O" confirmation and the communication will be in an invalid state. You will not be able to close the session anymore and will need to turn off/on the machine to reset it into a good state.
-
-When first starting up, the embroidery software will issue a R57FF80 to see if a session is already started or not. If it's not started, it will start it. Opening the embroidery module session is required to download/upload/view/delete embroidery files.
-
-Also note that when changing baud rates, you may also be switching modes at the same time. For example, when you switch from 19200 bauds to 57600 bauds you may also at the same time be opening a embroidery module session. So, you should call "R57FF80" to make sure what mode you are in.
-
-If you move into embroidery mode and read all 0xFF, the embroidery module was not initialized?
-```
-R57FF80 --> FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  (Session Open, No initialized)
-```
-
-## Embroidery Module Session End
-
-To close the session, send the "TrME" command. You can see how R57FF80 looks before and after the command: 
-
-```
-R57FF80 --> 00CE800400CF80010000800403378004033704370704000A00F6F9FC07040010  (Session Open)
-Send "TrME" to close the session.
-R57FF80 --> B4A5000020DF002B797D03700FCE0C08535332FF0370FFFFFFFFFFFFFFFFFFFF  (Session Closed)
-```
-
-You notice that once "TrME" is send, the session closes and the 0x57FF80 memory location reverts to 0xB4A5. The embroidery software has a tendency to close the embroidery module connection each time it's done with some operation probably in order to keep the default state being to communicate with the sewing machine. So, if you disconnect the serial cable at normal times, the serial port will be ready for sewing software.
-
-## Invoke Machine Function Call
-
-You can invoke code to run on the machine by placing argument 1 in 0x0201E1 and argument 2 in 0x0201DC and then writing the function call number into 0xFFFED0. For example:
+`RF?` is **not** a real command. It is a `R` (read) command that you
+deliberately abort:
 
 ```
-W0201DC01? --> Write 01 to 0201DC         // Set argument 2
-W0201E100? --> Write 00 to 0201E1         // Set argument 1
-WFFFED00031? --> Write 0031 to FFFED0     // Invoke function 0x0031
+R   -> starts a read
+F   -> a valid hex digit (accepted, echoed)
+?   -> not a hex digit -> the machine echoes '?' and returns to idle
 ```
 
-When a function is called, the software always reads 0xFFFED0, this is likely to read the 2 first bytes that may indicate is the invocation completed and if so, what is the return value.
+The net effect: the machine echoes `RF?` and its protocol state is reset to
+idle. Use it to:
+
+- **Probe** whether the machine is listening (you get `RF?` echoed back).
+- **Recover** after any `Q` / `?` / `!` — send `RF?`, waiting for each character
+  to be echoed, then resume.
+
+---
+
+## 3. Command summary
+
+19 command letters are decoded. Case is significant.
+
+| Letter | Name | Purpose | §  |
+| --- | --- | --- | --- |
+| `r` | Read byte | Read 1 byte, returned as hex | §4.1 |
+| `R` | Read block | Read 32 (0x20) bytes, returned as hex | §4.2 |
+| `N` | Dump block | Read 256 bytes as **raw binary** | §4.3 |
+| `L` | Checksum | 32-bit sum of a memory range | §4.4 |
+| `w` | Write byte | Write 1 byte to RAM/registers, with read-back verify | §5.1 |
+| `W` | Write stream | Write a run of bytes to RAM/registers | §5.2 |
+| `Z` | Flash byte | Program one byte into flash | §6.1 |
+| `M` | Modify flash | Stream bytes into flash from an address | §6.2 |
+| `P` | Download | Bulk firmware loader (`PB` bank / `PS` sector) | §6.3 |
+| `J` | Baud rate | Change the serial bit rate | §7 |
+| `T` | To PC port | `TrME` — switch the protocol onto SCI1 | §7 |
+| `I` | Identify | Send the BIOS identification banner | §8.1 |
+| `V` | Version | Report the BIOS version byte | §8.2 |
+| `K` | Ack / ping | Reply `O`, do nothing else | §8.3 |
+| `Y` | Confirm | Wait for a host `Q` and raise the "confirmed" flag | §8.4 |
+| `S` | Start app | Jump to the application (primary entry) | §9.1 |
+| `G` | Go | Jump to the application (alternate entry) | §9.2 |
+| `X` | Reset | Restart the boot ROM | §9.3 |
+| `H` | Halt | Stop the machine but keep serving the link | §9.4 |
+
+Any other letter → the machine replies `Q`.
+
+---
+
+## 4. Reading memory
+
+### 4.1 `r` — Read one byte (hex)
 
 ```
-RFFFED0 -->
-   ASCII: .....@.....3................@...
-   HEX: 00 02 00 00 00 40 00 00 00 83 00 33 00 00 00 00 00 00 00 00 00 00 00 00 04 00 00 01 40 00 00 00
+Send:     r AAAAAA
+Receive:  <echo> DD O
 ```
 
-Note that most of this data past the two first bytes is likely of no use and only requested because the read command always pulls 32 bytes.
+- `AAAAAA` — 6 hex address digits.
+- `DD` — the byte at that address, as 2 hex characters.
+- Ends with `O`.
 
-A guess is that this read is made to make sure the first two bytes are not equal to the number of the calling function. So, you write 0x0031 to FFFED0 and read it back to make sure it's changed confirming the call completed. Most of the time the read value will be 0x0002, however method call 0x0101 will return a value of 0x0000.
-
-This method invocation system allows the software to tell the machine to do all sorts of things. Figuring out what function call do what is the real magic.
-
-## Machine Name, Language & Version
-
-Reading memory at 0x200100 will give you the machine firmware version. You also see the firmware language and manufacturer after this. It's a set of fixed length null terminated strings.
+Example:
 
 ```
-N200100 --> "NMMV03.01·English     ·Bernina Electronic  AG  ·July 98"
+r200100   ->  ...echoes... "4EO"      (byte at 0x200100 is 0x4E)
 ```
 
-The software uses the R200100 command to read firmware version.
+> The region **0x204000–0x207FFF is walled off** and always reads back as `FF`
+> through `r` and `R`.
 
-## Detecting the PC Card
+### 4.2 `R` — Read 32 bytes (hex)
 
-The embroidery module has a PC card slot. Then a embroidery session is enabled, You can check if the PC card is inserted or not by reading the memory at location 0xFFFED9. The fist byte will be 0x82 = No PC Card oe 0x83 = Yes, card present. Here are sample memory dumps:
+Identical to `r` but returns a fixed **32 bytes** (0x20) as 64 hex characters,
+then `O`.
 
 ```
-RFFFED9 --> 8300330000000000000000000000000200000100000000000000000000000000  <- PC Card Present
-            8200000000000000000000000000000200000100000000000000000000000000  <- No PC Card
+Send:     R AAAAAA
+Receive:  <echo> <64 hex chars> O
 ```
 
-It's possible the the least significant bit of the first byte indicates a PC card in inserted. Obviously, if the session is currently open to the sewing machine, other data will be present there that is not relevent.
+`R200100` returns the application identity block (version, language,
+manufacturer). On the v2 machine the version field reads `NMMV02.08`; a v3
+machine returns its own firmware version/language/manufacturer strings, e.g.:
 
-## Inserting and Removing a PC Card
+```
+R200100  ->  "53524D5630332E30312000467269747A204765676175662041470D004F637420O"
+```
 
-If inserting or disconnecting a PC card while a embroidery session is enabled, the embroidery module will start sending this HEX string rapidly in a loop:
+This is the workhorse for reading structured data (version strings, status
+words, function-call return blocks). It always returns exactly 32 bytes even if
+you only care about the first few.
 
-HEX: 70 00 40 00 00 00 A3 00 33 00 00 00 00 86
+### 4.3 `N` — Dump 256 bytes (raw binary)
 
-This does not seem to be recoverable. Your going to have to turn off/on the machine to get into a good state. This said, the software will close the embroidery session quickly so, as long as the PC card is removed or inserted without an active embroidery session going on, it should be ok.
+```
+Send:     N AAAAAA
+Receive:  <echo> <256 raw bytes> O
+```
 
-Sending "F" during this message loop may stop it, but more investigation needs to be done. The normal software does not seem to handle this case.
+Unlike `R`, the 256 bytes come back as **raw binary**, not hex — twice the data
+in a quarter of the wire bytes. This is what you use to pull large memory images
+quickly. Terminate the block on the trailing `O`.
+
+- There is **no** 0x204000–0x207FFF guard on `N`; it reads straight through.
+- When downloading a large range, use `N` repeatedly for full 256-byte pages and
+  switch to `R`/`r` for a trailing remainder of ≤ 32 bytes.
+
+Example:
+
+```
+N0240F5  ->  "LisaV45Rev8..... ... Cs021...........................O"
+```
+
+### 4.4 `L` — Checksum a range
+
+```
+Send:     L AAAAAA NNNNNN
+Receive:  <echo> SSSSSSSS O
+```
+
+- `AAAAAA` — 6 hex start address.
+- `NNNNNN` — 6 hex byte count.
+- `SSSSSSSS` — the 32-bit arithmetic sum of those bytes, as 8 hex characters.
+
+Example:
+
+```
+L0240D5000360  ->  "00004CC9O"     (sum of 0x360 bytes from 0x0240D5 = 0x4CC9)
+```
+
+Use it to verify a download landed intact without reading the whole range back.
+
+> If the start address is inside the walled-off 0x204000–0x207FFF window, the
+> reply is the sentinel `AFAFAFAF` — a value no real range sums to — so you can
+> tell it apart from a genuine result.
+
+---
+
+## 5. Writing RAM and registers
+
+These two commands write to ordinary memory (RAM, I/O registers). They do **not**
+program flash — for that see §6. Writing registers is also how you invoke
+on-machine function calls (see the "Invoke Machine Function Call" section of
+[SerialProtocol-old.md](SerialProtocol-old.md)).
+
+### 5.1 `w` — Write one byte (with verify)
+
+```
+Send:     w AAAAAA DD
+Receive:  <echo> O|N
+```
+
+- Writes byte `DD` to address `AAAAAA`, then **reads it straight back**.
+- Replies `O` if the read-back matches, `N` if it does not (e.g. you wrote to
+  ROM or to a non-writable address).
+
+Example:
+
+```
+w0201E101  ->  ...echoes... "O"      (wrote 0x01 to 0x0201E1, verified)
+```
+
+### 5.2 `W` — Write a stream of bytes
+
+```
+Send:     W AAAAAA DD DD DD ... ?
+Receive:  <echo of everything, including the final ?>
+```
+
+- After the 6-digit address, keep sending data bytes as 2-hex-character pairs.
+- The address auto-advances after each byte.
+- **Terminate by sending any non-hex character** — `?` by convention. The
+  machine echoes it and returns to idle.
+- Streaming mode does **not** send an `O`/`N` per byte and gives **no final
+  status**. If you need confirmation, follow up with a `R`/`r` read or an `L`
+  checksum.
+
+Example:
+
+```
+WFFFED00061?  ->  writes 0x00,0x61 starting at 0xFFFED0, then '?' ends it
+```
+
+> **Practical pattern.** Use `W` to reach the next 256-byte boundary, then switch
+> to the bulk `PS` uploader (§6.3) for aligned pages. This mirrors what the
+> original PC software does.
+
+---
+
+## 6. Programming flash
+
+Flash is the machine's code/firmware memory. It cannot be written in place a
+byte at a time; the boot ROM reads a whole 256-byte page into RAM, patches it,
+and reprograms the page. Only the Atmel-A4 part on this machine is programmable;
+other identified parts report a failure.
+
+> ⚠️ **These commands modify firmware.** A bad write can leave the machine
+> unbootable. Do not use them unless you are deliberately reprogramming the
+> device and have a recovery path (the boot ROM download loop, §10).
+
+### 6.1 `Z` — Program one byte into flash
+
+```
+Send:     Z AAAAAA DD
+Receive:  <echo> O|V
+```
+
+- Reads the page containing `AAAAAA`, patches in byte `DD`, and reprograms the
+  whole page.
+- `O` = programmed and verified. `V` = the bank is not writable flash, or
+  programming did not verify.
+- Interrupts are masked for the whole operation (code memory cannot be read
+  while it is being programmed).
+
+### 6.2 `M` — Modify: stream bytes into flash
+
+```
+Send:     M AAAAAA DD DD DD ... <non-hex>
+Receive:  <echo ...>  (V on a non-flash bank)
+```
+
+- After the address, stream data bytes as 2-hex pairs; the address auto-advances.
+- The page under the cursor is held in RAM and only committed to flash when the
+  address crosses into the next page — so a run of edits inside one page costs a
+  single programming cycle.
+- **End the command by sending any non-hex character.** That is not an error: it
+  commits the final, partially filled page. There is no other way to stop `M`.
+- A bank that is not the Atmel-A4 part replies `V`.
+
+Use `Z` for a single byte; use `M` to edit a contiguous run.
+
+### 6.3 `P` — Bulk download (firmware loader)
+
+`P` is the reason the whole protocol exists. A second letter picks the form:
+
+#### `PS` — one sector (page)
+
+```
+Send:     PS SSSS
+          (machine replies) O E
+Send:     <256 raw bytes>
+          (machine replies) O | V
+```
+
+- `SSSS` — 4 hex digits; the target address is `SSSS << 8` (page-aligned).
+- The machine sends `O` ("ready") then `E` ("send the page").
+- You send exactly **256 raw bytes**.
+- The machine replies `O` on success, `V` on verify failure.
+- If the target is ordinary RAM (not flash), the page is simply stored there and
+  acknowledged with `O`.
+
+Example (matches the original software):
+
+```
+PS028F   ->  machine: "OE"
+             host:    <256 bytes>
+             machine: "O"
+```
+
+#### `PB` — a whole bank (streaming)
+
+```
+Send:     PB BB
+          (machine replies) O
+Loop:
+          (machine) E
+          host:     Y  <256 raw bytes>      -> program next page
+             or:    <anything but Y>         -> stop
+          (machine) O | V   (status of the *previous* page; see note)
+End:      (machine) N
+```
+
+- `BB` — 2 hex digits; the target address is `BB << 16` (start of a 64K bank).
+- The machine streams pages for as long as you answer `Y`. Answer with anything
+  else (e.g. `N`) to stop.
+- For the Atmel-A4 part, page receive and programming are pipelined, so the
+  `O`/`V` status you read is for the **previous** page, not the one you just
+  sent. Account for this one-page lag when checking results.
+- A bank that does not identify as writable flash replies `V` and stops.
+
+`PB` is for reflashing an entire bank; `PS` is for a single page or for loading
+data into RAM.
+
+> The v2 ROM's own firmware image checksums to `H'00FD5AA5`, and a v3-era host
+> burner reflashed this ROM (206,492 bytes) over the link with **no change**
+> needed — the download path is identical across both ROMs.
+
+---
+
+## 7. Changing baud rate and channel
+
+### `J` — Change baud rate
+
+```
+Send:     J DD
+          (machine switches rate, then) "BOS"  (at the NEW rate)
+          host must re-handshake with "EB" at the new rate (see §10)
+```
+
+- `DD` — 2 hex digits written directly into the SCI bit-rate register (BRR).
+- After switching, the machine announces itself with `BOS` at the **new** rate
+  and waits for the host to re-establish contact (`EB`).
+- **Fail-safe:** if the host does not follow within the window, the machine
+  reverts to the default rate (BRR `0x11`, 19200) and keeps announcing `BOS`
+  until contact is re-made. A bad divisor cannot strand the link — *as long as
+  you are quick to re-handshake.*
+
+BRR values (assuming the machine's 11.0592 MHz clock, SMR async ÷1):
+
+| `J` argument | Baud |
+| --- | --- |
+| `J02` | 115200 |
+| `J05` | 57600 |
+| `J08` | 38400 |
+| `J11` | 19200 (default) |
+| `J23` | 9600 |
+| `J47` | 4800 |
+
+Typical use: after connecting at 19200, send `J05` to move to 57600, then
+immediately re-handshake.
+
+### `T` — Switch the protocol onto the PC port (`TrME`)
+
+```
+Send:     T r M E
+Receive:  <echo of each> ; on the final 'E' the protocol moves to SCI1
+```
+
+- The four characters `TrME` must arrive in order; each is echoed. Any wrong
+  character replies `N`.
+- On the final `E`, after a short settling delay, the protocol is switched onto
+  SCI1 (the PC port).
+
+> The higher-level strings you may see in captures decompose into these
+> primitives:
+> - `TrMEJ05` = `TrME` (ensure the PC channel) + `J05` (go to 57600).
+> - `TrMEYQ`  = `TrME` + `Y` `Q` (the confirm command, §8.4).
+>
+> Embroidery-module sessions are built on `TrME` plus the internal port bridge
+> (the same on both ROMs); see [HighLevel.md](HighLevel.md) for the
+> session-level view.
+
+---
+
+## 8. Identity, status and handshaking
+
+### 8.1 `I` — Identify
+
+```
+Send:     I
+Receive:  <echo> "BERNINA Electronic AG\r" "BiosVersion: X.YY\r" "<month> 97\r"
+```
+
+Three CR-terminated strings. Handy as a human-readable "who are you". The version
+and month depend on the ROM:
+
+- **v2**: `BiosVersion: 1.10` / `Mai 97`.
+- **v3**: `BiosVersion: 1.20` / `July 97`.
+
+### 8.2 `V` — Version byte
+
+```
+Send:     V
+Receive:  <echo> XX
+```
+
+- `XX` — the BIOS version byte as 2 hex characters:
+  - **`0B`** on v2 (corresponds to `1.10`).
+  - **`0C`** on v3 (corresponds to `1.20`).
+- No trailing status byte.
+- This is the cleanest one-byte way to tell a v2 ROM from a v3 ROM over the wire.
+
+### 8.3 `K` — Ack / ping
+
+```
+Send:     K
+Receive:  O
+```
+
+Replies `O` and changes nothing. Unlike `RF?`, it does not touch the protocol
+state — a clean, side-effect-free "are you alive?".
+
+### 8.4 `Y` — Confirm
+
+```
+Send:     Y
+Send:     Q
+Receive:  <echo Y> <echo Q>       (sets the internal "confirmed" flag)
+       or <echo Y> N              (if the second byte was not Q)
+```
+
+- After `Y`, the machine waits for the host to send `Q`. On `Q` it echoes it and
+  raises a sticky "confirmed" flag that the application can test; anything else
+  replies `N`.
+- Seen on the wire as part of `EBYQ` / `TrMEYQ` during connection and session
+  setup.
+
+---
+
+## 9. Execution control
+
+> ⚠️ These commands change what code is running. `S`/`G` hand control to the
+> application and do not return; `X` restarts the boot ROM; `H` stops normal
+> operation. Use them deliberately.
+
+### 9.1 `S` — Start the application
+
+```
+Send:     S
+Receive:  S            (then the machine jumps to the application; no return)
+```
+
+Jumps to the application's **primary** entry (the same entry the boot sequence
+uses). Sends its own `S` acknowledgement first.
+
+### 9.2 `G` — Go (alternate entry)
+
+```
+Send:     G
+Receive:  G            (then the machine jumps; no return)
+```
+
+Hands control to the application through its **alternate** entry (the longword at
+0x200004). The `G` is echoed before control is given away.
+
+### 9.3 `X` — Reset the boot ROM
+
+```
+Send:     X
+Receive:  X            (then the boot ROM restarts from the top)
+```
+
+Masks interrupts and re-enters the boot sequence. After this the machine behaves
+as if freshly powered for protocol purposes: it re-announces `BOS` and expects a
+fresh handshake (§10). Reverts to the default baud (19200).
+
+### 9.4 `H` — Halt
+
+```
+Send:     H
+Receive:  H            (machine halts; link stays alive)
+```
+
+Stops normal operation (interrupts masked) but keeps servicing the serial link
+forever — so the download/command protocol still works, but nothing else runs.
+
+---
+
+## 10. Connecting from cold (handshake)
+
+When the machine powers on (or after `X`), the boot ROM:
+
+1. Brings the bus and the serial channel(s) up at **19200**.
+   - **v3** initialises **both** SCI0 and SCI1.
+   - **v2** initialises **SCI1 only** — it does not bring SCI0 up.
+2. Sends `BOS` (0x42 0x4F 0x53).
+   - **v3** polls both channels; **v2** listens on SCI1 only.
+3. Offers the link to a host for a fixed window (500 rounds).
+
+To **claim the link**, send `EB`:
+
+- On the PC port (SCI1) each matched character is echoed; a wrong byte draws a
+  `Q` and restarts the match (this is why an idle-in-handshake machine answers
+  `Q` to stray bytes).
+- **v3** matches `EB` on whichever channel completed the match (SCI0 or SCI1).
+- **v2** matches `EB` on **SCI1 only**.
+
+> **v2 caveat — do not talk blind.** Because v2 has no SCI0 handshake arm and
+> does not clear line errors during the handshake (§0), you should **wait for the
+> `BOS` announcement on SCI1 before sending `EB`**, and drive a clean idle line
+> beforehand. A line error latched at reset can make a v2 machine answer with a
+> stray `!` (`EBM!`) or, on real hardware, go deaf for the whole handshake
+> window. v3 clears the error silently and answers a clean `EBM`.
+
+What happens next depends on whether a host grabbed the link and whether the
+application flash holds a valid program:
+
+| Situation | Machine sends | Result |
+| --- | --- | --- |
+| No host connects, app is valid | `BOS` then `N` → **`BOSN`** | Boots into the application (normal power-on) |
+| Host connects, or app is invalid | `BOS` then `M` → **`BOSM`** | Stays in the boot ROM download loop, ready for firmware |
+
+So:
+
+- **`BOSN`** at 19200 = the machine is about to run its application normally.
+- **`BOSM`** = the machine is sitting in the bootloader waiting for commands
+  (your recovery entry point for reflashing via `PB`/`PS`).
+
+Because the application also services this command set (§ intro), you do **not**
+have to be in the bootloader to read/checksum/write/switch baud — you only need
+the bootloader for programming flash from a cold, non-booting state.
+
+### Baud-change handshake, end to end
+
+```
+(at 19200)  machine: "BOS" ...
+host:       "EB"                       -> claim the link (SCI1; SCI1-only on v2)
+host:       "J05"                      -> request 57600
+(rate changes) machine: "BOS"          -> now at 57600
+host:       "EB"                       -> re-claim at the new rate, quickly
+```
+
+> **Timing warning.** After the rate change the machine announces `BOS` at the
+> new rate and gives you only a short window to re-handshake. Miss it and the
+> machine falls back to 19200 and announces `BOS` periodically; if it drops all
+> the way back it may be unrecoverable without a power cycle.
+
+---
+
+## 11. Recipes
+
+**Probe / resync**
+
+```
+RF?              -> expect "RF?" echoed back = machine is listening
+K                -> expect "O"                = machine is alive (no state change)
+```
+
+**Identify the firmware (and tell v2 from v3)**
+
+```
+I                -> banner: BERNINA Electronic AG / BiosVersion / month
+                    v2: 1.10 / Mai 97      v3: 1.20 / July 97
+R200100          -> application identity strings (32 bytes hex; "NMMV02.08" on v2)
+V                -> BIOS version byte: "0B" = v2   "0C" = v3
+```
+
+**Dump a large memory range**
+
+```
+for each 256-byte page:  N <addr>     -> 256 raw bytes + O
+final ≤32-byte remainder: R <addr> or r <addr>
+verify:                   L <start> <len>  and compare the 32-bit sum
+```
+
+**Write a few settings, then a full page**
+
+```
+w AAAAAA DD          -> single verified byte, expect O
+W AAAAAA DD DD ... ? -> a short run up to the next page boundary
+PS SSSS -> O E -> <256 bytes> -> O   -> the aligned page
+```
+
+**Reflash a bank (from the bootloader, BOSM state)**
+
+```
+PB BB
+loop: read E, send "Y"+256 bytes, read O/V (note the one-page lag)
+stop: send a non-Y byte, read N
+```
+
+**Go faster**
+
+```
+EB   (claim; SCI1-only on v2) -> J05 -> BOS (57600) -> EB (re-claim, quickly)
+```
+
+---
+
+## 12. Quick reference card
+
+```
+Reads       r AAAAAA            -> DD O                 (1 byte hex)
+            R AAAAAA            -> 32 bytes hex + O
+            N AAAAAA            -> 256 raw bytes + O
+            L AAAAAA NNNNNN     -> SSSSSSSS O           (32-bit sum)
+
+Writes      w AAAAAA DD         -> O|N                  (verified)
+            W AAAAAA DD... ?    -> (echo only)          (stream, ? ends)
+
+Flash       Z AAAAAA DD         -> O|V                  (1 byte)
+            M AAAAAA DD... <nx> -> (V if not flash)     (stream, non-hex ends)
+            PS SSSS -> OE -> 256 bytes -> O|V           (one page)
+            PB BB   -> O -> {E, Y+256} ... -> N         (whole bank)
+
+Link        J DD                -> BOS (new rate), re-handshake
+            T r M E             -> switch to PC port (SCI1)
+            EB                  -> claim link (handshake; SCI1-only on v2)
+
+Info        I                   -> identity banner (v2: 1.10/Mai 97, v3: 1.20/July 97)
+            V                   -> version byte: "0B" (v2)  vs  "0C" (v3)
+            K                   -> O                     (ping)
+            Y then Q            -> confirm flag
+
+Control     S / G               -> start application (no return)
+            X                   -> restart boot ROM
+            H                   -> halt (link stays alive)
+
+Resync      RF?                 -> reset protocol state to idle
+
+Status/err  O=ok  N=negative  V=verify/flash-fail
+            Q=unknown cmd  ?=bad hex digit  !=line error(0x21)
+
+v2 vs v3    V0B/1.10/Mai 97 = v2      V0C/1.20/July 97 = v3
+            v2 handshake is SCI1-only and does not clear line errors
+```

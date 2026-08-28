@@ -17,6 +17,9 @@ class FakeMachine implements Transport {
   bool _open = false;
   int baudRate = 19200;
 
+  /// BIOS version byte reported by the 'V' command (0x0C = v3, 0x0B = v2).
+  int biosVersion = 0x0C;
+
   /// Commands received (fully assembled) for assertions in tests.
   final List<String> commandLog = [];
 
@@ -110,6 +113,12 @@ class FakeMachine implements Transport {
       final body = s.substring(1, s.length - 1);
       return body.length >= 6 && body.length.isEven && _allHex(body, 0);
     }
+    if (s.length == 1 && 'IVKGSXH'.contains(s)) return true;
+    if (s == 'YQ') return true;
+    if (s.length == 7 && s[0] == 'r' && _allHex(s, 1)) return true;
+    if (s.length == 9 && (s[0] == 'w' || s[0] == 'Z') && _allHex(s, 1)) {
+      return true;
+    }
     return false;
   }
 
@@ -123,6 +132,11 @@ class FakeMachine implements Transport {
     if (s[0] == 'W' && !s.contains('?') && _allHex(s, 1)) return true;
     if ('PS'.startsWith(s)) return true;
     if (s.startsWith('PS') && s.length < 6 && _allHex(s, 2)) return true;
+    if (s[0] == 'r' && s.length < 7 && _allHex(s, 1)) return true;
+    if ((s[0] == 'w' || s[0] == 'Z') && s.length < 9 && _allHex(s, 1)) {
+      return true;
+    }
+    if (s == 'Y') return true; // waiting for the trailing 'Q'
     return false;
   }
 
@@ -130,6 +144,38 @@ class FakeMachine implements Transport {
     commandLog.add(command);
     if (command == 'RF?' || command == 'TrME') return; // echo-only
     if (command == 'TrMEYQ') {
+      _emit('O');
+      return;
+    }
+    // Boot-loader command set (v2/v3): identity, version, ping, confirm and
+    // execution control. The received letters are already echoed by send().
+    if (command == 'V') {
+      _emit(biosVersion.toRadixString(16).toUpperCase().padLeft(2, '0'));
+      return;
+    }
+    if (command == 'K') {
+      _emit('O');
+      return;
+    }
+    if (command == 'I') {
+      _emit('BERNINA Electronic AG\rBiosVersion: 1.20\rJuly 97\r');
+      return;
+    }
+    if (command == 'YQ' ||
+        command == 'G' ||
+        command == 'S' ||
+        command == 'X' ||
+        command == 'H') {
+      return; // echo-only
+    }
+    if (command.length == 7 && command[0] == 'r') {
+      final addr = int.parse(command.substring(1), radix: 16);
+      _emit('${_hexOf(_readBytes(addr, 1))}O');
+      return;
+    }
+    if (command.length == 9 && (command[0] == 'w' || command[0] == 'Z')) {
+      final addr = int.parse(command.substring(1, 7), radix: 16);
+      memory[addr] = int.parse(command.substring(7, 9), radix: 16);
       _emit('O');
       return;
     }

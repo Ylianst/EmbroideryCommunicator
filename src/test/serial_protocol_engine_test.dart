@@ -146,4 +146,45 @@ void main() {
     final read = await engine.read(0x024080);
     expect(read.binaryData!.first, 0x2D);
   });
+
+  test('readByte returns a single byte', () async {
+    writeMem(0x200100, [0x4E, 0xFF]);
+
+    final result = await engine.readByte(0x200100);
+
+    expect(result.success, isTrue);
+    expect(result.binaryData, [0x4E]);
+    expect(machine.commandLog, contains('r200100'));
+  });
+
+  test('writeByte writes and verifies a single byte', () async {
+    final result = await engine.writeByte(0x0201E1, 0x5A);
+
+    expect(result.success, isTrue);
+    expect(machine.memory[0x0201E1], 0x5A);
+    expect(machine.commandLog, contains('w0201E15A'));
+  });
+
+  test('biosVersion reports the boot ROM version byte', () async {
+    machine.biosVersion = 0x0B; // v2 (1.10)
+
+    final result = await engine.biosVersion();
+
+    expect(result.success, isTrue);
+    expect(result.binaryData!.first, 0x0B);
+    expect(machine.commandLog, contains('V'));
+  });
+
+  test('identify returns the banner lines', () async {
+    final result = await engine.identify();
+
+    expect(result.success, isTrue);
+    expect(result.response, contains('BERNINA Electronic AG'));
+    expect(result.response, contains('BiosVersion'));
+  });
+
+  test('ping is acknowledged', () async {
+    final result = await engine.ping();
+    expect(result.success, isTrue);
+  });
 }

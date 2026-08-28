@@ -7,19 +7,75 @@ import 'command_result.dart';
 import 'protocol_engine.dart';
 import 'protocol_timing.dart';
 
-/// Character codes used by the protocol.
+/// Character codes used internally by the protocol handshakes.
 const int _cR = 0x52; // 'R'
 const int _cF = 0x46; // 'F'
 const int _cQuestion = 0x3F; // '?'
 const int _cO = 0x4F; // 'O'
 const int _cE = 0x45; // 'E'
+const int _cQ = 0x51; // 'Q'
+const int _cY = 0x59; // 'Y'
+
+/// The command letters understood by the Bernina boot loader (v2 BIOS 1.10 and
+/// v3 BIOS 1.20) and by the running application, which services the same
+/// command set through the boot ROM. See `docs/SerialProtocol.md` for the
+/// full byte-level reference; both ROM revisions share this command layer.
+///
+/// Every command is a single ASCII letter. Addresses are 6 hex digits
+/// (24-bit), data bytes are 2 hex digits, the machine echoes each character it
+/// accepts, and most replies end in a status byte (see [BerninaStatus]).
+class BerninaCommand {
+  BerninaCommand._();
+
+  static const int identify = 0x49; // 'I'  identity banner
+  static const int readByte = 0x72; // 'r'  read 1 byte (hex)
+  static const int readBlock = 0x52; // 'R'  read 32 bytes (hex)
+  static const int dumpBlock = 0x4E; // 'N'  read 256 raw bytes
+  static const int writeByte = 0x77; // 'w'  write 1 byte (verified)
+  static const int writeStream = 0x57; // 'W'  write stream, '?' ends it
+  static const int ackPing = 0x4B; // 'K'  ack/ping -> 'O'
+  static const int go = 0x47; // 'G'  jump to application (alt entry)
+  static const int reset = 0x58; // 'X'  restart the boot ROM
+  static const int halt = 0x48; // 'H'  halt, keep the link alive
+  static const int startApp = 0x53; // 'S'  start application (primary entry)
+  static const int confirm = 0x59; // 'Y'  confirm (host then sends 'Q')
+  static const int version = 0x56; // 'V'  BIOS version byte
+  static const int baud = 0x4A; // 'J'  set SCI bit rate (2 hex BRR)
+  static const int toPcPort = 0x54; // 'T'  "TrME" switch to SCI1
+  static const int flashByte = 0x5A; // 'Z'  program 1 byte into flash
+  static const int download = 0x50; // 'P'  PB bank / PS sector loader
+  static const int modify = 0x4D; // 'M'  stream bytes into flash
+  static const int checksum = 0x4C; // 'L'  32-bit sum of a range
+}
+
+/// Single-byte status / error replies from the machine.
+class BerninaStatus {
+  BerninaStatus._();
+
+  static const int ok = 0x4F; // 'O'  success
+  static const int negative = 0x4E; // 'N'  refused / verify failed
+  static const int verifyFail = 0x56; // 'V'  not writable flash / no verify
+  static const int unknownCommand = 0x51; // 'Q'  unknown command letter
+  static const int badHexDigit = 0x3F; // '?'  non-hex where hex expected
+  static const int lineError = 0x21; // '!'  serial line error (NAK)
+}
 
 /// Low-level engine for the Bernina character-echo serial protocol.
 ///
-/// Ported from the legacy `SerialStack.cs`. It sits on top of a [Transport]
-/// (which owns the byte link) and implements the request/response commands
-/// (R/N/W/PS/L), the RF? reset/recovery, checksummed block transfers, the
-/// embroidery-session start/stop, and the baud-rate switch.
+/// Ported from the legacy `SerialStack.cs` and extended to cover the full boot
+/// loader command set reconstructed in `docs/SerialProtocol.md`. It sits on
+/// top of a [Transport] (which owns the
+/// byte link) and implements:
+///
+///  * memory access - read ([read]/[readByte]), dump ([largeRead]), write
+///    ([write]/[writeByte]), block upload ([upload]) and checksum ([sum]);
+///  * identity/status - [identify], [biosVersion], [ping];
+///  * link control - [protocolReset] (`RF?`), [sessionStart]/[sessionEnd]
+///    (embroidery bridge) and the baud switch;
+///  * boot-loader control - [confirm], and the DANGEROUS [flashByte],
+///    [modifyFlash], [downloadBank], [startApplication], [go], [resetBootRom]
+///    and [halt], which reprogram firmware or transfer execution and are not
+///    used in normal operation.
 ///
 /// All public operations are serialized: only one command or handshake runs at
 /// a time, matching the single-command-in-flight behavior of the machine.
@@ -110,6 +166,72 @@ class SerialProtocolEngine implements ProtocolEngine {
     final command = 'PS${(address >> 8).toRadixString(16).toUpperCase().padLeft(4, '0')}';
     return _mutex.run(() => _executeUpload(command, data));
   }
+
+  // ---------------------------------------------------------------------------
+  // Additional single commands (full boot-loader command set)
+  // ---------------------------------------------------------------------------
+
+  /// Read one byte (`r` + 6 hex). Returns a 1-byte [CommandResult.binaryData].
+  /// Where [read] always returns 32 bytes, this returns exactly one.
+  Future<CommandResult> readByte(int address) =>
+      _mutex.run(() => _executeCommand('r${_addr(address)}'));
+
+  /// Write one byte (`w` + 6 hex + 2 hex) with machine read-back verify.
+  /// Succeeds on `O`, fails on `N` (e.g. the target is ROM or a wall).
+  Future<CommandResult> writeByte(int address, int value) =>
+      _mutex.run(() => _executeCommand('w${_addr(address)}${_hex2(value)}'));
+
+  /// Reads the boot ROM identity banner (`I`). Returns the three banner lines
+  /// joined by ` | ` (e.g. `BERNINA Electronic AG | BiosVersion: 1.20 | July 97`).
+  Future<CommandResult> identify() => _mutex.run(_identifyImpl);
+
+  /// Reads the boot ROM BIOS version byte (`V`). `0x0C` = v3 (1.20),
+  /// `0x0B` = v2 (1.10). The value is returned as [CommandResult.binaryData].
+  Future<CommandResult> biosVersion() =>
+      _mutex.run(() => _executeCommand('V'));
+
+  /// Pings the machine (`K`); it replies `O` and changes no protocol state.
+  Future<CommandResult> ping() => _mutex.run(_pingImpl);
+
+  /// Confirms to the machine (`Y` then `Q`), raising its "confirmed" flag.
+  Future<CommandResult> confirm() => _mutex.run(_confirmImpl);
+
+  // ---------------------------------------------------------------------------
+  // Boot-loader / flash commands - DANGEROUS, not used in normal operation.
+  // These reprogram firmware or hand over execution and can brick a machine.
+  // ---------------------------------------------------------------------------
+
+  /// Programs a single byte into flash (`Z` + 6 hex + 2 hex). Succeeds on `O`,
+  /// fails on `V` (bank is not writable flash, or programming did not verify).
+  Future<CommandResult> flashByte(int address, int value) =>
+      _mutex.run(() => _executeCommand('Z${_addr(address)}${_hex2(value)}'));
+
+  /// Streams [data] into flash from [address] (`M`), committing each 256-byte
+  /// page as the cursor crosses it and on completion. DANGEROUS.
+  Future<CommandResult> modifyFlash(int address, Uint8List data) =>
+      _mutex.run(() => _modifyFlashImpl(address, data));
+
+  /// Bulk-programs a whole 64 KB flash bank (`PB`). [pages] are 256-byte pages
+  /// programmed in order. DANGEROUS and advanced - not exercised by the app.
+  Future<CommandResult> downloadBank(int bank, List<Uint8List> pages) =>
+      _mutex.run(() => _downloadBankImpl(bank, pages));
+
+  /// Starts the application via its primary entry (`S`). Hands over execution;
+  /// the boot-loader protocol stops responding afterwards. DANGEROUS.
+  Future<CommandResult> startApplication() => _mutex
+      .run(() => _controlCommand(BerninaCommand.startApp, 'Start application'));
+
+  /// Jumps to the application via its alternate entry (`G`). DANGEROUS.
+  Future<CommandResult> go() =>
+      _mutex.run(() => _controlCommand(BerninaCommand.go, 'Go'));
+
+  /// Restarts the boot ROM (`X`); the machine re-announces `BOS`. DANGEROUS.
+  Future<CommandResult> resetBootRom() =>
+      _mutex.run(() => _controlCommand(BerninaCommand.reset, 'Reset boot ROM'));
+
+  /// Halts the machine (`H`) while keeping the serial link alive. DANGEROUS.
+  Future<CommandResult> halt() =>
+      _mutex.run(() => _controlCommand(BerninaCommand.halt, 'Halt'));
 
   // ---------------------------------------------------------------------------
   // Block transfers
@@ -527,6 +649,146 @@ class SerialProtocolEngine implements ProtocolEngine {
   }
 
   // ---------------------------------------------------------------------------
+  // Additional command implementations (lock-free)
+  // ---------------------------------------------------------------------------
+
+  Future<CommandResult> _identifyImpl() async {
+    if (!transport.isOpen) return CommandResult.failure('Not connected');
+    _buffer = '';
+    await transport.send(_one(BerninaCommand.identify));
+    // Banner: an 'I' echo followed by three carriage-return-terminated lines.
+    final deadline = DateTime.now().add(timing.confirmationTimeout);
+    while (DateTime.now().isBefore(deadline)) {
+      if ('\r'.allMatches(_buffer).length >= 3) break;
+      await Future.delayed(timing.charPollInterval);
+    }
+    var banner = _buffer;
+    _buffer = '';
+    if (banner.startsWith('I')) banner = banner.substring(1);
+    final lines = banner
+        .split('\r')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    if (lines.length < 3) {
+      return CommandResult.failure('Incomplete identify banner');
+    }
+    return CommandResult.ok(response: lines.join(' | '));
+  }
+
+  Future<CommandResult> _pingImpl() async {
+    if (!transport.isOpen) return CommandResult.failure('Not connected');
+    _buffer = '';
+    await transport.send(_one(BerninaCommand.ackPing));
+    if (await _waitForChar(_cO, timing.confirmationTimeout)) {
+      _buffer = '';
+      return CommandResult.ok(response: 'O');
+    }
+    return CommandResult.failure("No ack for 'K'");
+  }
+
+  Future<CommandResult> _confirmImpl() async {
+    if (!transport.isOpen) return CommandResult.failure('Not connected');
+    _buffer = '';
+    if (!await _sendAndWaitForEcho(_cY, timing.echoTimeout)) {
+      return CommandResult.failure("Confirm: no echo for 'Y'");
+    }
+    if (!await _sendAndWaitForEcho(_cQ, timing.echoTimeout)) {
+      return CommandResult.failure("Confirm: no echo for 'Q'");
+    }
+    _buffer = '';
+    return CommandResult.ok(response: 'Confirmed');
+  }
+
+  Future<CommandResult> _controlCommand(int letter, String name) async {
+    if (!transport.isOpen) return CommandResult.failure('Not connected');
+    _buffer = '';
+    if (!await _sendAndWaitForEcho(letter, timing.echoTimeout)) {
+      return CommandResult.failure(
+          "$name: no echo for '${String.fromCharCode(letter)}'");
+    }
+    _buffer = '';
+    return CommandResult.ok(response: name);
+  }
+
+  Future<CommandResult> _modifyFlashImpl(int address, Uint8List data) async {
+    if (!transport.isOpen) return CommandResult.failure('Not connected');
+    if (data.isEmpty) return CommandResult.failure('Data cannot be empty');
+    _buffer = '';
+    for (final c in 'M${_addr(address)}'.codeUnits) {
+      if (!await _sendAndWaitForEcho(c, timing.echoTimeout)) {
+        return CommandResult.failure(
+            "Modify: no echo for '${String.fromCharCode(c)}'");
+      }
+    }
+    // A bank that is not writable flash answers 'V' before taking any data.
+    await Future.delayed(timing.postTransmitDelay);
+    if (_buffer.contains('V')) {
+      _buffer = '';
+      return CommandResult.failure('Modify rejected (V) - not writable flash');
+    }
+    for (final b in data) {
+      for (final c in _hex2(b).codeUnits) {
+        if (!await _sendAndWaitForEcho(c, timing.echoTimeout)) {
+          return CommandResult.failure('Modify: no echo during data stream');
+        }
+      }
+    }
+    // Any non-hex character commits the final page and ends the command.
+    _buffer = '';
+    await transport.send(_one(_cQuestion));
+    await Future.delayed(timing.postTransmitDelay);
+    _buffer = '';
+    return CommandResult.ok(
+        response: 'Modified ${data.length} bytes at 0x${_addr(address)}');
+  }
+
+  Future<CommandResult> _downloadBankImpl(
+      int bank, List<Uint8List> pages) async {
+    if (!transport.isOpen) return CommandResult.failure('Not connected');
+    if (pages.isEmpty) return CommandResult.failure('No pages to program');
+    if (pages.any((p) => p.length != 256)) {
+      return CommandResult.failure('Every page must be exactly 256 bytes');
+    }
+    _buffer = '';
+    for (final c in 'PB${_hex2(bank)}'.codeUnits) {
+      if (!await _sendAndWaitForEcho(c, timing.echoTimeout)) {
+        return CommandResult.failure(
+            "Bank download: no echo for '${String.fromCharCode(c)}'");
+      }
+    }
+    if (!await _waitForChar(_cO, timing.confirmationTimeout)) {
+      await _recover();
+      return CommandResult.failure('Bank download: machine not ready (no O)');
+    }
+    _buffer = '';
+    var failures = 0;
+    for (final page in pages) {
+      if (!await _waitForChar(_cE, timing.uploadConfirmTimeout)) {
+        await _recover();
+        return CommandResult.failure('Bank download: no page request (E)');
+      }
+      _buffer = '';
+      await transport.send(_one(_cY)); // 'Y' - a page follows
+      await transport.send(page);
+      // The O/V status lags one page; note any verify failure we see.
+      await Future.delayed(timing.postTransmitDelay);
+      if (_buffer.contains('V')) failures++;
+      _buffer = '';
+    }
+    // Stop: any non-'Y' answer ends the stream; the machine acknowledges 'N'.
+    await transport.send(_one(BerninaStatus.negative));
+    await _waitForChar(BerninaStatus.negative, timing.confirmationTimeout);
+    _buffer = '';
+    if (failures > 0) {
+      return CommandResult.failure(
+          'Bank download finished with $failures verify failure(s)');
+    }
+    return CommandResult.ok(
+        response: 'Programmed ${pages.length} pages into bank 0x${_hex2(bank)}');
+  }
+
+  // ---------------------------------------------------------------------------
   // Low-level helpers
   // ---------------------------------------------------------------------------
 
@@ -588,6 +850,24 @@ class SerialProtocolEngine implements ProtocolEngine {
       return response.length == command.length + 256 + 1 &&
           response.endsWith('O');
     }
+    // r (read one byte): echo + 2 hex digits + 'O'.
+    if (command.startsWith('r') && command.length == 7) {
+      return response.length == command.length + 3 && response.endsWith('O');
+    }
+    // w (verified write): echo + 'O' (ok) or 'N' (verify failed).
+    if (command.startsWith('w') && command.length == 9) {
+      return response.length == command.length + 1 &&
+          (response.endsWith('O') || response.endsWith('N'));
+    }
+    // Z (flash one byte): echo + 'O' (ok) or 'V' (flash failure).
+    if (command.startsWith('Z') && command.length == 9) {
+      return response.length == command.length + 1 &&
+          (response.endsWith('O') || response.endsWith('V'));
+    }
+    // V (version): echo + two version nibbles, no status byte.
+    if (command == 'V') {
+      return response.length == 3;
+    }
     if (command.startsWith('PS') && command.length == 6) {
       return response.length == command.length + 2 &&
           response.startsWith(command) &&
@@ -624,6 +904,26 @@ class SerialProtocolEngine implements ProtocolEngine {
         bytes[i] = data.codeUnitAt(i) & 0xFF;
       }
       return CommandResult.ok(response: _bytesToHex(bytes), binaryData: bytes);
+    } else if (command.startsWith('r') && command.length == 7) {
+      if (response.length > command.length) {
+        var data = response.substring(command.length);
+        if (data.endsWith('O')) data = data.substring(0, data.length - 1);
+        return CommandResult.ok(response: data, binaryData: _hexToBytes(data));
+      }
+    } else if (command.startsWith('w') && command.length == 9) {
+      return response.endsWith('O')
+          ? CommandResult.ok(response: 'O')
+          : CommandResult.failure('Write not verified (N)');
+    } else if (command.startsWith('Z') && command.length == 9) {
+      return response.endsWith('O')
+          ? CommandResult.ok(response: 'O')
+          : CommandResult.failure('Flash write failed (V)');
+    } else if (command == 'V') {
+      final hex = response.length >= 3 ? response.substring(1, 3) : '';
+      final val = int.tryParse(hex, radix: 16);
+      return CommandResult.ok(
+          response: hex,
+          binaryData: val == null ? null : Uint8List.fromList([val]));
     } else if (command.startsWith('L')) {
       if (response.length > command.length) {
         var data = response.substring(command.length);
@@ -655,6 +955,9 @@ class SerialProtocolEngine implements ProtocolEngine {
 
   static String _addr(int value) =>
       value.toRadixString(16).toUpperCase().padLeft(6, '0');
+
+  static String _hex2(int value) =>
+      (value & 0xFF).toRadixString(16).toUpperCase().padLeft(2, '0');
 
   static String _bytesToHex(Uint8List data) {
     final sb = StringBuffer();
