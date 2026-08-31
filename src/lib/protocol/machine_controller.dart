@@ -5,6 +5,7 @@ import '../domain/models/embroidery_file.dart';
 import '../domain/models/enums.dart';
 import '../domain/models/firmware_info.dart';
 import 'command_result.dart';
+import 'design_cipher.dart';
 import 'protocol_engine.dart';
 
 /// Delays and retry counts for high-level machine operations.
@@ -57,13 +58,25 @@ class MachineController {
   bool _busy = false;
   bool get isBusy => _busy;
 
+  /// Cached embroidery-module firmware version (BCD-hex, `0` = unknown). Drives
+  /// the firmware >= 3.09 extra-data gate (see SerialProtocol/DllAnalysis.md ┬º5.1).
+  int moduleVersionCode = 0;
+  bool get _hasExtraDataBlock => moduleVersionCode >= 0x0309;
+
+  /// A confirmed pre-2.10 (v2) module takes the legacy subset path: it fails the
+  /// firmware >= 2.10 capability gate and has no extra-data-block concept at all
+  /// (SerialProtocol/DllAnalysis.md ┬º5.2, Gate A). Unknown version (`0`) is
+  /// treated as capable so a failed version read never drops file data.
+  bool get _isLegacyV2Module =>
+      moduleVersionCode != 0 && moduleVersionCode < 0x0210;
+
   // Well-known machine addresses.
   static const int _addrSessionMode = 0x57FF80;
   static const int _addrFirmware = 0x200100;
   static const int _addrPcCard = 0xFFFED9;
   static const int _addrFunction = 0xFFFED0;
-  static const int _addrArg1 = 0x0201E1;
-  static const int _addrArg2 = 0x0201DC;
+  static const int _addrArg1 = 0x0201DC; // argument 1 ΓÇö file number / index
+  static const int _addrArg2 = 0x0201E1; // argument 2 ΓÇö page number / flag
   static const int _addrFileCount = 0x024080;
   static const int _addrAttributes = 0x0240B9;
   static const int _addrNames = 0x0240D5;
@@ -75,24 +88,27 @@ class MachineController {
   static const int _addrWritePreview = 0x024480;
   static const int _addrBlockSize = 0x02409D;
 
-  static const int _funcSelectModule = 0x00A1;
-  static const int _funcSelectPcCard = 0x0051;
-  static const int _funcCleanup = 0x0101;
+  static const int _funcSelectModule = 0x00A1; // 'Select module memory'
+  static const int _funcSelectPcCard = 0x0051; // 'Select PC Card'
+  static const int _funcCleanup = 0x0101; // 'End session'
 
   // ---------------------------------------------------------------------------
   // Low-level building blocks (unguarded)
   // ---------------------------------------------------------------------------
 
-  /// Sets argument 1 (0x0201E1) for a subsequent function invocation.
+  /// Sets argument 1 (0x0201DC ΓÇö the file number / index) for a subsequent
+  /// function invocation. See SerialProtocol/MachineFunctions.md.
   Future<CommandResult> setArgument1(int value) =>
       engine.write(_addrArg1, Uint8List.fromList([value & 0xFF]));
 
-  /// Sets argument 2 (0x0201DC) for a subsequent function invocation.
+  /// Sets argument 2 (0x0201E1 ΓÇö the page number / flag) for a subsequent
+  /// function invocation.
   Future<CommandResult> setArgument2(int value) =>
       engine.write(_addrArg2, Uint8List.fromList([value & 0xFF]));
 
   /// Invokes a machine function by writing [functionId] to 0xFFFED0 and polling
-  /// 0xFFFED0 until the first two bytes read back 0x0002 or 0x0000.
+  /// 0xFFFED0 until the first two bytes read back 0x0002 or 0x0000. Function
+  /// codes and names are catalogued in SerialProtocol/MachineFunctions.md.
   Future<CommandResult> invokeFunction(int functionId,
       {Duration delay = Duration.zero}) async {
     final bytes = Uint8List.fromList([(functionId >> 8) & 0xFF, functionId & 0xFF]);
@@ -173,14 +189,29 @@ class MachineController {
       }
     }
 
+    final versionCode = FirmwareInfo.parseVersionCode(version.value);
+    if (!isSewing) moduleVersionCode = versionCode;
+
     return FirmwareInfo(
       mode: mode,
       version: version.value,
+      versionCode: versionCode,
       language: language,
       manufacturer: manufacturer.value,
       date: date.value,
       pcCardInserted: pcCardInserted,
     );
+  }
+
+  /// Reads and caches the embroidery module's firmware version code so the
+  /// firmware >= 3.09 extra-data gate can be evaluated. Must be called while in
+  /// embroidery mode; a no-op once the version is known.
+  Future<void> _ensureModuleVersion() async {
+    if (moduleVersionCode != 0) return;
+    final result = await engine.largeRead(_addrFirmware);
+    final data = result.binaryData;
+    if (!result.success || data == null) return;
+    moduleVersionCode = FirmwareInfo.parseVersionCode(_readNullString(data, 0).value);
   }
 
   // ---------------------------------------------------------------------------
@@ -235,10 +266,10 @@ class MachineController {
         if (!await _selectStorage(location)) return null;
 
         // Initialize reading.
-        if (!(await setArgument2(0x01)).success) return null;
-        if (!(await setArgument1(0x00)).success) return null;
-        if (!(await invokeFunction(0x0031)).success) return null;
-        if (!(await invokeFunction(0x0021)).success) return null;
+        if (!(await setArgument1(0x01)).success) return null;
+        if (!(await setArgument2(0x00)).success) return null;
+        if (!(await invokeFunction(0x0031)).success) return null; // Move to page 1
+        if (!(await invokeFunction(0x0021)).success) return null; // Load directory
 
         final countResult = await engine.read(_addrFileCount);
         if (!countResult.success ||
@@ -249,7 +280,7 @@ class MachineController {
         final totalFileCount = countResult.binaryData![0];
         files = <EmbroideryFile>[];
 
-        if (!(await setArgument1(0)).success) return null;
+        if (!(await setArgument2(0)).success) return null;
 
         var fileIndex = 0;
         var pageIndex = 0;
@@ -284,11 +315,11 @@ class MachineController {
 
           if (fileIndex < totalFileCount) {
             pageIndex++;
-            if (!(await setArgument1(pageIndex)).success) return null;
-            if (pageIndex == 1 && !(await invokeFunction(0x0061)).success) {
+            if (!(await setArgument2(pageIndex)).success) return null;
+            if (pageIndex == 1 && !(await invokeFunction(0x0061)).success) { // Move to page 2
               return null;
             } else if (pageIndex == 2 &&
-                !(await invokeFunction(0x00C1)).success) {
+                !(await invokeFunction(0x00C1)).success) { // Move to page 3
               return null;
             }
           }
@@ -317,11 +348,12 @@ class MachineController {
         }
         if (!await _selectStorage(location)) return null;
 
-        if (!(await setArgument2(fileId + 1)).success) return null;
-        if (!(await setArgument1(0x00)).success) return null;
+        if (!(await setArgument1(fileId + 1)).success) return null;
+        if (!(await setArgument2(0x00)).success) return null;
+        // 0x0031 = 'Move to page 1', 0x0061 = 'Move to page 2'
         final initFunc = fileId < 27 ? 0x0031 : 0x0061;
         if (!(await invokeFunction(initFunc)).success) return null;
-        if (!(await invokeFunction(0x0021)).success) return null;
+        if (!(await invokeFunction(0x0021)).success) return null; // Load directory
 
         final countResult = await engine.read(_addrFileCount);
         if (!countResult.success ||
@@ -332,7 +364,7 @@ class MachineController {
         final total = countResult.binaryData![0];
         if (fileId < 0 || fileId >= total) return null;
 
-        if (!(await setArgument1(0)).success) return null;
+        if (!(await setArgument2(0)).success) return null;
 
         final address = _addrPreviewBase + _previewSize * (fileId % 27);
         final preview =
@@ -365,11 +397,12 @@ class MachineController {
         }
         await engine.protocolReset();
         if (!await _selectStorage(location)) return null;
+        await _ensureModuleVersion();
 
-        if (!(await setArgument2(fileId + 1)).success) return null;
-        if (!(await setArgument1(0x01)).success) return null;
-        if (!(await invokeFunction(0x0061)).success) return null;
-        if (!(await invokeFunction(0x0021)).success) return null;
+        if (!(await setArgument1(fileId + 1)).success) return null;
+        if (!(await setArgument2(0x01)).success) return null;
+        if (!(await invokeFunction(0x0061)).success) return null; // Move to page 2
+        if (!(await invokeFunction(0x0021)).success) return null; // Load directory
 
         final countResult = await engine.read(_addrFileCount);
         if (!countResult.success ||
@@ -380,9 +413,9 @@ class MachineController {
         final total = countResult.binaryData![0];
         if (fileId < 0 || fileId >= total) return null;
 
-        if (!(await setArgument2(fileId + 1)).success) return null;
-        if (!(await setArgument1(0x01)).success) return null;
-        if (!(await invokeFunction(0x0401)).success) return null;
+        if (!(await setArgument1(fileId + 1)).success) return null;
+        if (!(await setArgument2(0x01)).success) return null;
+        if (!(await invokeFunction(0x0401)).success) return null; // Stage design
 
         final lengths = await engine.read(_addrFileLengths);
         if (!lengths.success ||
@@ -403,12 +436,24 @@ class MachineController {
         if (!fileResult.success || fileResult.binaryData == null) return null;
 
         final all = fileResult.binaryData!;
+        Uint8List? extraOut;
+        if (fileExtraLength > 0 && !_isLegacyV2Module) {
+          final raw = Uint8List.sublistView(all, fileDataLength, totalLength);
+          if (_hasExtraDataBlock) {
+            // Firmware >= 3.09 serves the trailer framed + encrypted; decrypt it
+            // and drop the 8-byte frame header to expose the plaintext payload.
+            final dec = Uint8List.fromList(raw);
+            DesignCipher.decrypt(dec);
+            extraOut =
+                dec.length > 8 ? Uint8List.sublistView(dec, 8) : Uint8List(0);
+          } else {
+            extraOut = Uint8List.fromList(raw);
+          }
+        }
         return EmbroideryFile(
           fileId: fileId,
           fileData: Uint8List.sublistView(all, 0, fileDataLength),
-          fileExtraData: fileExtraLength > 0
-              ? Uint8List.sublistView(all, fileDataLength, totalLength)
-              : null,
+          fileExtraData: extraOut,
         );
       } finally {
         if (sessionStarted) {
@@ -433,10 +478,10 @@ class MachineController {
         await engine.protocolReset();
         if (!await _selectStorage(location)) return false;
 
-        if (!(await invokeFunction(0x0041)).success) return false;
-        if (!(await setArgument2(fileId + 1)).success) return false;
-        if (!(await setArgument1(0x01)).success) return false;
-        if (!(await invokeFunction(0x0801, delay: timing.deleteDelay)).success) {
+        if (!(await invokeFunction(0x0041)).success) return false; // Prepare delete
+        if (!(await setArgument1(fileId + 1)).success) return false;
+        if (!(await setArgument2(0x01)).success) return false;
+        if (!(await invokeFunction(0x0801, delay: timing.deleteDelay)).success) { // Execute delete
           return false;
         }
         await invokeFunction(_funcCleanup);
@@ -467,15 +512,6 @@ class MachineController {
       return CommandResult.failure('PreviewImageData is empty');
     }
 
-    final Uint8List mainBlock;
-    final Uint8List previewBlock;
-    try {
-      mainBlock = createMainDataBlock(file);
-      previewBlock = createPreviewDataBlock(file);
-    } catch (e) {
-      return CommandResult.failure('Failed to create data blocks: $e');
-    }
-
     final result = await _guarded<CommandResult>(() async {
       var sessionStarted = false;
       try {
@@ -491,8 +527,26 @@ class MachineController {
         if (!await _selectStorage(location)) {
           return CommandResult.failure('Failed to select storage source');
         }
+        await _ensureModuleVersion();
 
-        final ready = await invokeFunction(0x0011);
+        // Firmware < 3.09 cannot store the extra-data block, so omit it; newer
+        // firmware expects it framed + encrypted (see DllAnalysis.md ┬º5.1).
+        final ext = file.fileExtraData;
+        final List<int> wireExtra =
+            (ext != null && ext.isNotEmpty && _hasExtraDataBlock)
+                ? DesignCipher.frameAndEncrypt(ext)
+                : const <int>[];
+
+        final Uint8List mainBlock;
+        final Uint8List previewBlock;
+        try {
+          mainBlock = createMainDataBlock(file, extraOverride: wireExtra);
+          previewBlock = createPreviewDataBlock(file);
+        } catch (e) {
+          return CommandResult.failure('Failed to create data blocks: $e');
+        }
+
+        final ready = await invokeFunction(0x0011); // Prepare upload
         if (!ready.success) {
           return CommandResult.failure('Failed to ready module for upload');
         }
@@ -531,7 +585,7 @@ class MachineController {
           return CommandResult.failure('Failed to write filename');
         }
 
-        final store = await invokeFunction(0x0201, delay: timing.storeDelay);
+        final store = await invokeFunction(0x0201, delay: timing.storeDelay); // Write new file
         if (!store.success) {
           return CommandResult.failure('Failed to invoke store function 0x0201');
         }
@@ -552,8 +606,10 @@ class MachineController {
 
   /// Builds the main upload block: 2 length-ish bytes + 166 nulls + 4-byte data
   /// length + 4-byte extra length + file data (ensured 0x80 0x81 terminated) +
-  /// extra data.
-  Uint8List createMainDataBlock(EmbroideryFile file) {
+  /// extra data. When [extraOverride] is supplied it replaces
+  /// `file.fileExtraData` as the trailer bytes (already framed/encrypted by the
+  /// caller for firmware >= 3.09).
+  Uint8List createMainDataBlock(EmbroideryFile file, {List<int>? extraOverride}) {
     final data = file.fileData;
     if (data == null || data.isEmpty) {
       throw ArgumentError('FileData must not be empty');
@@ -572,7 +628,7 @@ class MachineController {
     }
 
     final fileDataLength = fileDataEx.length;
-    final extra = file.fileExtraData;
+    final extra = extraOverride ?? file.fileExtraData;
     final fileExtraLength = extra?.length ?? 0;
     final result = Uint8List(176 + fileDataLength + fileExtraLength);
     var offset = 0;

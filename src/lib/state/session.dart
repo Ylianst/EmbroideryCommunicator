@@ -41,8 +41,10 @@ final trafficLogProvider = Provider<TrafficLog>((ref) {
   return log;
 });
 
-/// Baud rates attempted when connecting, in order.
-const List<int> _connectBauds = [19200, 57600];
+/// Baud rates attempted when connecting, in order. Covers the same set the
+/// official `RF?` auto-detect cycles (4800/19200/57600/115200); the common
+/// defaults are tried first so a healthy machine connects quickly.
+const List<int> _connectBauds = [19200, 57600, 4800, 115200];
 
 /// Immutable snapshot of the machine session for the UI.
 class MachineSessionState {

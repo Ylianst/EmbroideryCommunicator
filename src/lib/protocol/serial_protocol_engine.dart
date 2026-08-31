@@ -797,6 +797,12 @@ class SerialProtocolEngine implements ProtocolEngine {
     await transport.send(_one(code));
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
+      // v2 boot ROMs don't clear latched line errors and may prepend a stray
+      // '!' (NAK) before echoing the character; skip it so the handshake still
+      // matches. v3+ clear the error, so there is nothing to skip.
+      while (_buffer.isNotEmpty && _buffer.codeUnitAt(0) == BerninaStatus.lineError) {
+        _buffer = _buffer.substring(1);
+      }
       if (_buffer.isNotEmpty && _buffer.codeUnitAt(0) == code) {
         _buffer = '';
         return true;

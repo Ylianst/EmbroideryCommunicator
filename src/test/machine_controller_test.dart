@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:embroidery_communicator/domain/models/embroidery_file.dart';
 import 'package:embroidery_communicator/domain/models/enums.dart';
+import 'package:embroidery_communicator/protocol/design_cipher.dart';
 import 'package:embroidery_communicator/protocol/machine_controller.dart';
 import 'package:embroidery_communicator/protocol/protocol_timing.dart';
 import 'package:embroidery_communicator/protocol/serial_protocol_engine.dart';
@@ -143,6 +144,92 @@ void main() {
       expect(file, isNotNull);
       expect(file!.fileData, [0xAA, 0xBB, 0xCC, 0xDD]);
       expect(file.fileExtraData, isNull);
+    });
+
+    test('readEmbroideryFile decrypts the extra-data block on fw >= 3.09',
+        () async {
+      setSewingMode();
+      putStr(0x200100, 'NMMV04.00'); // v4 -> hasExtraDataBlock
+      putBytes(0x024080, [1]); // file count
+      final exp = [0xAA, 0xBB, 0x80, 0x81];
+      final extraPayload = [1, 2, 3, 4];
+      final wireExtra = DesignCipher.frameAndEncrypt(extraPayload);
+      putBytes(0x028F40,
+          [0, 0, 0, exp.length, 0, 0, 0, wireExtra.length]); // data + extra len
+      putBytes(0x028F48, [...exp, ...wireExtra]);
+
+      final file = await controller.readEmbroideryFile(
+          StorageLocation.embroideryModuleMemory, 0);
+
+      expect(file, isNotNull);
+      expect(file!.fileData, exp);
+      expect(file.fileExtraData, extraPayload);
+    });
+
+    test('readEmbroideryFile omits the extra-data block on a v2 module',
+        () async {
+      // A pre-2.10 (v2) module takes the legacy subset path: it has no
+      // extra-data-block concept, so any reported trailer is not attached
+      // (SerialProtocol/DllAnalysis.md ┬º5.2, Gate A).
+      setSewingMode();
+      putStr(0x200100, 'NMMV02.08'); // v2 -> legacy subset path
+      putBytes(0x024080, [1]); // file count
+      final exp = [0xAA, 0xBB, 0x80, 0x81];
+      putBytes(0x028F40, [0, 0, 0, exp.length, 0, 0, 0, 4]); // data + extra len
+      putBytes(0x028F48, [...exp, 0x11, 0x22, 0x33, 0x44]);
+
+      final file = await controller.readEmbroideryFile(
+          StorageLocation.embroideryModuleMemory, 0);
+
+      expect(file, isNotNull);
+      expect(file!.fileData, exp);
+      expect(file.fileExtraData, isNull);
+    });
+
+    test('writeEmbroideryFile omits the extra-data block on a v2 module',
+        () async {
+      // v2 cannot store the extra-data trailer, so the extra-length field stays
+      // zero and no trailer bytes are written even when the file carries some.
+      setSewingMode();
+      putStr(0x200100, 'NMMV02.08'); // v2 -> legacy subset path
+      final file = EmbroideryFile(
+        fileName: 'D',
+        fileData: Uint8List.fromList([0xAA, 0xBB, 0x80, 0x81]),
+        fileExtraData: Uint8List.fromList([1, 2, 3, 4]),
+        previewImageData: Uint8List(558),
+      );
+      final expected = controller.createMainDataBlock(file, extraOverride: const []);
+
+      final result = await controller.writeEmbroideryFile(
+          file, StorageLocation.embroideryModuleMemory);
+      expect(result.success, isTrue);
+      expect(expected.sublist(172, 176), [0, 0, 0, 0]); // extra length = 0
+      for (var i = 0; i < expected.length; i++) {
+        expect(machine.memory[0x028E98 + i], expected[i], reason: 'main[$i]');
+      }
+    });
+
+    test('writeEmbroideryFile frames + encrypts extra data on fw >= 3.09',
+        () async {
+      setSewingMode();
+      putStr(0x200100, 'NMMV04.00'); // v4 -> hasExtraDataBlock
+      final extraPayload = Uint8List.fromList([1, 2, 3, 4]);
+      final file = EmbroideryFile(
+        fileName: 'D',
+        fileData: Uint8List.fromList([0xAA, 0xBB, 0x80, 0x81]),
+        fileExtraData: extraPayload,
+        previewImageData: Uint8List(558),
+      );
+      final wireExtra = DesignCipher.frameAndEncrypt(extraPayload);
+      final expected =
+          controller.createMainDataBlock(file, extraOverride: wireExtra);
+
+      final result = await controller.writeEmbroideryFile(
+          file, StorageLocation.embroideryModuleMemory);
+      expect(result.success, isTrue);
+      for (var i = 0; i < expected.length; i++) {
+        expect(machine.memory[0x028E98 + i], expected[i], reason: 'main[$i]');
+      }
     });
 
     test('deleteEmbroideryFile completes', () async {

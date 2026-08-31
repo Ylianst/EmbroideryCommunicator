@@ -8,9 +8,9 @@ import 'transport.dart';
 /// [Transport] implementation for desktop platforms (Windows/macOS/Linux)
 /// backed by `flutter_libserialport`.
 ///
-/// The link is configured as N,8,1 with no flow control, matching the machine's
-/// serial parameters. Baud rate can be changed on the fly, which the high-level
-/// protocol uses to upgrade from 19200 to 57600 baud.
+/// The link is configured as N,8,1 with no flow control and DTR/RTS asserted,
+/// matching the machine's serial parameters. Baud rate can be changed on the
+/// fly, which the high-level protocol uses to upgrade from 19200 to 57600 baud.
 class DesktopSerialTransport implements Transport {
   DesktopSerialTransport(this.portName, {int baudRate = 19200}) {
     _baudRate = baudRate;
@@ -97,7 +97,11 @@ class DesktopSerialTransport implements Transport {
       ..bits = 8
       ..parity = SerialPortParity.none
       ..stopBits = 1
-      ..setFlowControl(SerialPortFlowControl.none);
+      ..setFlowControl(SerialPortFlowControl.none)
+      // Assert DTR/RTS: some serial cables/USB adapters only enable the link
+      // (and the machine only answers) when these lines are held high.
+      ..dtr = SerialPortDtr.on
+      ..rts = SerialPortRts.on;
   }
 }
 
