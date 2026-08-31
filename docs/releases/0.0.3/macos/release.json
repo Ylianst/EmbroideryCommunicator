@@ -9,12 +9,12 @@
   "artifact": {
     "kind": "zip",
     "url": "https://github.com/Ylianst/EmbroideryCommunicator/releases/download/v0.0.3/embroidery_communicator-0.0.3-macos.zip",
-    "sha256": "fd4eb8b2d1e3261eabe53ff0aceb975e5e2482b267b5a2e5cdfb0c04aa788e28",
-    "length": 20812600
+    "sha256": "72597bd68cc9c72cd22288fef5878bd03bfd605e9210eed15aa42dc9b09eb4c5",
+    "length": 20998123
   },
   "install": {
     "strategy": "wholeBundleReplace"
   },
   "minimumUpdaterVersion": "2.0.0",
-  "generatedAt": "2026-08-03T01:21:57.662192Z"
+  "generatedAt": "2026-08-31T03:38:29.156109Z"
 }

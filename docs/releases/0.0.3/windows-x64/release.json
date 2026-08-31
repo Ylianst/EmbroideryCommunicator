@@ -9,12 +9,12 @@
   "artifact": {
     "kind": "zip",
     "url": "https://github.com/Ylianst/EmbroideryCommunicator/releases/download/v0.0.3/embroidery_communicator-0.0.3-windows-x64.zip",
-    "sha256": "0812b72026ab8e03e9f1d32ef7d764334518a9ce41eaa878fce42743a4408470",
-    "length": 15547624
+    "sha256": "4b3d64112c3af32ef15a45db4276820db8b32d7caca5de98ebdf2b569e7a0a48",
+    "length": 14926872
   },
   "install": {
     "strategy": "wholeDirectoryReplace"
   },
   "minimumUpdaterVersion": "2.0.0",
-  "generatedAt": "2026-08-03T01:20:51.982195Z"
+  "generatedAt": "2026-08-31T03:37:38.893103Z"
 }
