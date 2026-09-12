@@ -19,6 +19,11 @@ class TrafficLog {
   final StreamController<TrafficEvent> _controller =
       StreamController<TrafficEvent>.broadcast();
 
+  /// Whether the current link is an embroidery relay (network) connection,
+  /// so consumers can decode traffic as the framed relay RPC protocol instead
+  /// of the raw serial protocol.
+  bool isRelay = false;
+
   // Cumulative link statistics (survive the capped event buffer).
   int _bytesSent = 0;
   int _bytesReceived = 0;
@@ -33,8 +38,12 @@ class TrafficLog {
   List<TrafficEvent> get events => List.unmodifiable(_events);
   Stream<TrafficEvent> get stream => _controller.stream;
 
+  /// When false, per-event data is not buffered or streamed (only the
+  /// cumulative counters update). Used to avoid flooding the debug views during
+  /// bulk transfers such as a full memory dump.
+  bool recordEvents = true;
+
   void add(bool sent, Uint8List data) {
-    final event = TrafficEvent(sent, data);
     if (sent) {
       _bytesSent += data.length;
       _framesSent++;
@@ -42,6 +51,8 @@ class TrafficLog {
       _bytesReceived += data.length;
       _framesReceived++;
     }
+    if (!recordEvents) return;
+    final event = TrafficEvent(sent, data);
     _events.add(event);
     if (_events.length > capacity) {
       _events.removeRange(0, _events.length - capacity);

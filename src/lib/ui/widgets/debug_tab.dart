@@ -1,42 +1,28 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
-import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../services/debug_window_channel.dart';
 import '../../services/hex_format.dart';
 import '../../services/protocol_decoder.dart';
+import '../../services/traffic_log.dart';
+import '../../state/session.dart';
 
-/// Root widget for the detached "Live debug" OS window.
-class DebugWindowApp extends StatelessWidget {
-  const DebugWindowApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Live debug',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
-        useMaterial3: true,
-      ),
-      home: const _DebugWindowView(),
-    );
-  }
-}
-
-class _DebugWindowView extends StatefulWidget {
-  const _DebugWindowView();
+/// In-app version of the "Live debug" view: a live look at all bytes exchanged
+/// with the machine or relay, with a raw hex dump and a decoded high-level
+/// command list. Mirrors the detached debug window.
+class DebugTab extends ConsumerStatefulWidget {
+  const DebugTab({super.key});
 
   @override
-  State<_DebugWindowView> createState() => _DebugWindowViewState();
+  ConsumerState<DebugTab> createState() => _DebugTabState();
 }
 
-class _DebugWindowViewState extends State<_DebugWindowView> {
-  final List<DebugTrafficEntry> _events = [];
+class _DebugTabState extends ConsumerState<DebugTab> {
+  StreamSubscription<TrafficEvent>? _sub;
   final ProtocolCommandDecoder _decoder = ProtocolCommandDecoder();
   final ScrollController _rawScroll = ScrollController();
   final ScrollController _cmdScroll = ScrollController();
@@ -45,60 +31,34 @@ class _DebugWindowViewState extends State<_DebugWindowView> {
   @override
   void initState() {
     super.initState();
-    DesktopMultiWindow.setMethodHandler(_handleMethod);
-    _requestSnapshot();
+    final log = ref.read(trafficLogProvider);
+    _rebuildDecoder(log);
+    _sub = log.stream.listen((e) {
+      if (!mounted) return;
+      setState(() {
+        _decoder.setMode(
+          log.isRelay ? ProtocolMode.relay : ProtocolMode.serial,
+        );
+        _decoder.addEntry(e.sent, e.data, e.time);
+      });
+      _scrollToEndLater();
+    });
   }
 
   @override
   void dispose() {
-    DesktopMultiWindow.setMethodHandler(null);
+    _sub?.cancel();
     _rawScroll.dispose();
     _cmdScroll.dispose();
     super.dispose();
   }
 
-  Future<dynamic> _handleMethod(MethodCall call, int fromWindowId) async {
-    if (call.method == kDebugMethodTraffic) {
-      _append(decodeTrafficEntry(call.arguments as Map<Object?, Object?>));
+  void _rebuildDecoder(TrafficLog log) {
+    _decoder.reset();
+    _decoder.setMode(log.isRelay ? ProtocolMode.relay : ProtocolMode.serial);
+    for (final e in log.events) {
+      _decoder.addEntry(e.sent, e.data, e.time);
     }
-    return null;
-  }
-
-  Future<void> _requestSnapshot() async {
-    final result = await DesktopMultiWindow.invokeMethod(
-      0,
-      kDebugMethodRequestSnapshot,
-    );
-    if (!mounted || result is! List) return;
-    setState(() {
-      _events
-        ..clear()
-        ..addAll(
-          result.map((e) => decodeTrafficEntry(e as Map<Object?, Object?>)),
-        );
-      _decoder.reset();
-      if (_events.isNotEmpty) {
-        _decoder.setMode(
-          _events.first.relay ? ProtocolMode.relay : ProtocolMode.serial,
-        );
-      }
-      for (final e in _events) {
-        _decoder.addEntry(e.sent, e.data, e.time);
-      }
-    });
-    _scrollToEndLater();
-  }
-
-  void _append(DebugTrafficEntry entry) {
-    if (!mounted) return;
-    setState(() {
-      _events.add(entry);
-      _decoder.setMode(
-        entry.relay ? ProtocolMode.relay : ProtocolMode.serial,
-      );
-      _decoder.addEntry(entry.sent, entry.data, entry.time);
-    });
-    _scrollToEndLater();
   }
 
   void _scrollToEndLater() {
@@ -107,15 +67,6 @@ class _DebugWindowViewState extends State<_DebugWindowView> {
       for (final c in [_rawScroll, _cmdScroll]) {
         if (c.hasClients) c.jumpTo(c.position.maxScrollExtent);
       }
-    });
-  }
-
-  Future<void> _clear() async {
-    await DesktopMultiWindow.invokeMethod(0, kDebugMethodClear);
-    if (!mounted) return;
-    setState(() {
-      _events.clear();
-      _decoder.reset();
     });
   }
 
@@ -133,10 +84,9 @@ class _DebugWindowViewState extends State<_DebugWindowView> {
         '${two(t.hour)}${two(t.minute)}${two(t.second)}';
   }
 
-  /// Renders the whole traffic log as a single block of monospace text.
-  String _buildLogText() {
+  String _buildLogText(List<TrafficEvent> events) {
     final sb = StringBuffer();
-    for (final e in _events) {
+    for (final e in events) {
       sb.writeln(
         '${_formatTime(e.time)}  ${e.sent ? 'TX' : 'RX'}  '
         '${HexFormat.hex(e.data)}   ${HexFormat.ascii(e.data)}',
@@ -145,8 +95,8 @@ class _DebugWindowViewState extends State<_DebugWindowView> {
     return sb.toString();
   }
 
-  Future<void> _saveLog() async {
-    final text = _buildLogText();
+  Future<void> _saveLog(List<TrafficEvent> events) async {
+    final text = _buildLogText(events);
     final name = 'embroidery-debug-log-${_fileTimestamp()}.txt';
     final location = await getSaveLocation(
       suggestedName: name,
@@ -168,48 +118,63 @@ class _DebugWindowViewState extends State<_DebugWindowView> {
     }
   }
 
+  void _clear() {
+    ref.read(trafficLogProvider).clear();
+    setState(_decoder.reset);
+  }
+
   @override
   Widget build(BuildContext context) {
+    final events = ref.read(trafficLogProvider).events;
     return DefaultTabController(
       length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Live debug'),
-          bottom: const TabBar(
-            tabs: [
-              Tab(text: 'Raw data'),
-              Tab(text: 'Commands'),
-            ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Material(
+            color: Theme.of(context).colorScheme.surface,
+            child: Row(
+              children: [
+                const Expanded(
+                  child: TabBar(
+                    isScrollable: true,
+                    tabAlignment: TabAlignment.start,
+                    tabs: [Tab(text: 'Raw data'), Tab(text: 'Commands')],
+                  ),
+                ),
+                IconButton(
+                  tooltip: _autoScroll ? 'Auto-scroll on' : 'Auto-scroll off',
+                  icon: Icon(
+                    _autoScroll ? Icons.vertical_align_bottom : Icons.pause,
+                  ),
+                  onPressed: () => setState(() => _autoScroll = !_autoScroll),
+                ),
+                IconButton(
+                  tooltip: 'Save As...',
+                  icon: const Icon(Icons.save_alt),
+                  onPressed: events.isEmpty ? null : () => _saveLog(events),
+                ),
+                IconButton(
+                  tooltip: 'Clear',
+                  icon: const Icon(Icons.delete_sweep),
+                  onPressed: _clear,
+                ),
+              ],
+            ),
           ),
-          actions: [
-            IconButton(
-              tooltip: _autoScroll ? 'Auto-scroll on' : 'Auto-scroll off',
-              icon: Icon(
-                _autoScroll ? Icons.vertical_align_bottom : Icons.pause,
-              ),
-              onPressed: () => setState(() => _autoScroll = !_autoScroll),
+          const Divider(height: 1),
+          Expanded(
+            child: TabBarView(
+              children: [_buildRawTab(events), _buildCommandsTab()],
             ),
-            IconButton(
-              tooltip: 'Save As...',
-              icon: const Icon(Icons.save_alt),
-              onPressed: _events.isEmpty ? null : _saveLog,
-            ),
-            IconButton(
-              tooltip: 'Clear',
-              icon: const Icon(Icons.delete_sweep),
-              onPressed: _clear,
-            ),
-          ],
-        ),
-        body: TabBarView(
-          children: [_buildRawTab(), _buildCommandsTab()],
-        ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildRawTab() {
-    if (_events.isEmpty) {
+  Widget _buildRawTab(List<TrafficEvent> events) {
+    if (events.isEmpty) {
       return const Center(child: Text('No traffic yet'));
     }
     return Scrollbar(
@@ -221,7 +186,7 @@ class _DebugWindowViewState extends State<_DebugWindowView> {
         child: SizedBox(
           width: double.infinity,
           child: SelectableText(
-            _buildLogText(),
+            _buildLogText(events),
             style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
           ),
         ),

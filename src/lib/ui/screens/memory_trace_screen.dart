@@ -24,25 +24,16 @@ enum _TraceMode {
   final String label;
 }
 
-/// Shows the live memory-trace dialog. Polling stops automatically when the
-/// dialog is dismissed.
-Future<void> showMemoryTraceDialog(BuildContext context) {
-  return showDialog<void>(
-    context: context,
-    builder: (_) => const MemoryTraceDialog(),
-  );
-}
-
-/// A dialog that repeatedly reads a small memory window and stacks each reading
+/// A screen that repeatedly reads a small memory window and stacks each reading
 /// as a hex row (newest on top) so changes over time are easy to spot.
-class MemoryTraceDialog extends ConsumerStatefulWidget {
-  const MemoryTraceDialog({super.key});
+class MemoryTraceScreen extends ConsumerStatefulWidget {
+  const MemoryTraceScreen({super.key});
 
   @override
-  ConsumerState<MemoryTraceDialog> createState() => _MemoryTraceDialogState();
+  ConsumerState<MemoryTraceScreen> createState() => _MemoryTraceScreenState();
 }
 
-class _MemoryTraceDialogState extends ConsumerState<MemoryTraceDialog> {
+class _MemoryTraceScreenState extends ConsumerState<MemoryTraceScreen> {
   static const List<int> _lengthOptions = [16, 32, 64, 128, 256];
   static const int _maxRows = 200;
 
@@ -127,36 +118,21 @@ class _MemoryTraceDialogState extends ConsumerState<MemoryTraceDialog> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Dialog(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 900, maxHeight: 640),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Text('Memory trace', style: theme.textTheme.titleLarge),
-                  const Spacer(),
-                  IconButton(
-                    tooltip: 'Close',
-                    icon: const Icon(Icons.close),
-                    onPressed: () => Navigator.of(context).pop(),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              _buildControls(context),
-              if (_error != null) ...[
-                const SizedBox(height: 8),
-                Text(_error!, style: TextStyle(color: theme.colorScheme.error)),
-              ],
-              const SizedBox(height: 12),
-              Expanded(child: _buildTrace(context)),
+    return Scaffold(
+      appBar: AppBar(title: const Text('Memory trace')),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildControls(context),
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(_error!, style: TextStyle(color: theme.colorScheme.error)),
             ],
-          ),
+            const SizedBox(height: 12),
+            Expanded(child: _buildTrace(context)),
+          ],
         ),
       ),
     );

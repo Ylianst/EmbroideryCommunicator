@@ -16,16 +16,18 @@ import '../../services/update_service.dart';
 import '../../services/debug_window_bridge.dart';
 import '../../services/hosted_config.dart';
 import '../../state/port_providers.dart';
+import '../../state/preferences.dart';
 import '../../state/session.dart';
 import '../about.dart';
 import '../app_exit.dart';
 import '../update_dialog.dart';
 import '../widgets/app_menu.dart';
+import '../widgets/debug_tab.dart';
 import '../widgets/display_tab.dart';
 import '../widgets/embroidery_file_tile.dart';
 import 'debug_screen.dart';
 import 'memory_dump_screen.dart';
-import 'memory_trace_dialog.dart';
+import 'memory_trace_screen.dart';
 import 'memory_viewer_screen.dart';
 import 'viewer_screen.dart';
 
@@ -33,21 +35,100 @@ const _expTypeGroup = XTypeGroup(label: 'Embroidery', extensions: ['exp']);
 
 const _prefNetworkHost = 'network_host';
 const _prefNetworkPort = 'network_port';
+const _prefShowDisplay = 'view_show_display';
+const _prefShowDebug = 'view_show_debug';
 
 /// How the embroidery/PC-card file panels present their files.
 enum FileViewMode { list, tile }
 
-/// Shared file-panel view mode so both storage tabs stay in sync.
+/// The per-storage view modes, tracked independently for each location.
+class FileViewModes {
+  final FileViewMode embroidery;
+  final FileViewMode pcCard;
+
+  const FileViewModes({
+    this.embroidery = FileViewMode.list,
+    this.pcCard = FileViewMode.list,
+  });
+
+  FileViewMode of(StorageLocation location) =>
+      location == StorageLocation.pcCard ? pcCard : embroidery;
+
+  FileViewModes copyWith({FileViewMode? embroidery, FileViewMode? pcCard}) =>
+      FileViewModes(
+        embroidery: embroidery ?? this.embroidery,
+        pcCard: pcCard ?? this.pcCard,
+      );
+}
+
+/// Per-storage file-panel view mode, remembered across restarts and tracked
+/// independently for each storage location (embroidery module vs PC card).
 final fileViewModeProvider =
-    NotifierProvider<FileViewModeNotifier, FileViewMode>(
+    NotifierProvider<FileViewModeNotifier, FileViewModes>(
       FileViewModeNotifier.new,
     );
 
-class FileViewModeNotifier extends Notifier<FileViewMode> {
+class FileViewModeNotifier extends Notifier<FileViewModes> {
   @override
-  FileViewMode build() => FileViewMode.list;
+  FileViewModes build() {
+    final prefs = ref.read(sharedPreferencesProvider);
+    FileViewMode read(StorageLocation location) => FileViewMode.values
+        .firstWhere(
+          (m) => m.name == prefs?.getString(_key(location)),
+          orElse: () => FileViewMode.list,
+        );
+    return FileViewModes(
+      embroidery: read(StorageLocation.embroideryModuleMemory),
+      pcCard: read(StorageLocation.pcCard),
+    );
+  }
 
-  void set(FileViewMode mode) => state = mode;
+  void set(StorageLocation location, FileViewMode mode) {
+    state = location == StorageLocation.pcCard
+        ? state.copyWith(pcCard: mode)
+        : state.copyWith(embroidery: mode);
+    ref.read(sharedPreferencesProvider)?.setString(_key(location), mode.name);
+  }
+
+  static String _key(StorageLocation location) =>
+      'file_view_mode_${location.name}';
+}
+
+/// Which optional tabs are currently revealed via the View menu.
+class VisibleTabs {
+  final bool display;
+  final bool debug;
+
+  const VisibleTabs({this.display = false, this.debug = false});
+
+  VisibleTabs copyWith({bool? display, bool? debug}) =>
+      VisibleTabs(display: display ?? this.display, debug: debug ?? this.debug);
+}
+
+/// Tracks which optional tabs (Display, Debug) are shown. The choice is
+/// remembered across restarts; both hidden by default.
+final visibleTabsProvider =
+    NotifierProvider<VisibleTabsNotifier, VisibleTabs>(VisibleTabsNotifier.new);
+
+class VisibleTabsNotifier extends Notifier<VisibleTabs> {
+  @override
+  VisibleTabs build() {
+    final prefs = ref.read(sharedPreferencesProvider);
+    return VisibleTabs(
+      display: prefs?.getBool(_prefShowDisplay) ?? false,
+      debug: prefs?.getBool(_prefShowDebug) ?? false,
+    );
+  }
+
+  void toggleDisplay() {
+    state = state.copyWith(display: !state.display);
+    ref.read(sharedPreferencesProvider)?.setBool(_prefShowDisplay, state.display);
+  }
+
+  void toggleDebug() {
+    state = state.copyWith(debug: !state.debug);
+    ref.read(sharedPreferencesProvider)?.setBool(_prefShowDebug, state.debug);
+  }
 }
 
 /// Prompts for a relay host/port and connects. The last-used values are
@@ -233,14 +314,21 @@ class _MainScreenState extends ConsumerState<MainScreen> {
                     ),
             ),
           ],
-          bottom: session.busy
-              ? const PreferredSize(
-                  preferredSize: Size.fromHeight(4),
-                  child: LinearProgressIndicator(minHeight: 4),
-                )
-              : null,
         ),
-        body: _ConnectedView(session: session),
+        // The progress bar overlays the top of the body so it never shifts the
+        // content down when work starts.
+        body: Stack(
+          children: [
+            _ConnectedView(session: session),
+            if (session.busy)
+              const Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: LinearProgressIndicator(minHeight: 4),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -251,6 +339,7 @@ class _MainScreenState extends ConsumerState<MainScreen> {
     MachineSessionState session,
   ) {
     final notifier = ref.read(machineSessionProvider.notifier);
+    final visible = ref.watch(visibleTabsProvider);
     return [
       AppSubmenu(
         label: 'File',
@@ -289,8 +378,32 @@ class _MainScreenState extends ConsumerState<MainScreen> {
         ],
       ),
       AppSubmenu(
+        label: 'View',
+        children: [
+          AppMenuAction(
+            label: 'Display',
+            checked: visible.display,
+            onPressed: () =>
+                ref.read(visibleTabsProvider.notifier).toggleDisplay(),
+          ),
+          AppMenuAction(
+            label: 'Debug',
+            checked: visible.debug,
+            onPressed: () =>
+                ref.read(visibleTabsProvider.notifier).toggleDebug(),
+          ),
+        ],
+      ),
+      AppSubmenu(
         label: 'Tools',
         children: [
+          AppMenuAction(
+            label: 'Memory Dump',
+            onPressed: session.isConnected
+                ? () => _openTool(context, 'dump')
+                : null,
+          ),
+          const AppMenuDivider(),
           AppMenuAction(
             label: 'Live Debug',
             onPressed: () => _openTool(context, 'debug'),
@@ -302,15 +415,9 @@ class _MainScreenState extends ConsumerState<MainScreen> {
                 : null,
           ),
           AppMenuAction(
-            label: 'Memory Dump',
+            label: 'Memory Trace',
             onPressed: session.isConnected
-                ? () => _openTool(context, 'dump')
-                : null,
-          ),
-          AppMenuAction(
-            label: 'Memory Trace\u2026',
-            onPressed: session.isConnected
-                ? () => showMemoryTraceDialog(context)
+                ? () => _openTool(context, 'trace')
                 : null,
           ),
         ],
@@ -364,6 +471,7 @@ class _MainScreenState extends ConsumerState<MainScreen> {
     final Widget screen = switch (tool) {
       'memory' => const MemoryViewerScreen(),
       'dump' => const MemoryDumpScreen(),
+      'trace' => const MemoryTraceScreen(),
       _ => const DebugScreen(),
     };
     Navigator.of(context).push(MaterialPageRoute(builder: (_) => screen));
@@ -485,58 +593,118 @@ class _ConnectDialog extends ConsumerWidget {
   }
 }
 
-class _ConnectedView extends ConsumerWidget {
+class _ConnectedView extends ConsumerStatefulWidget {
   const _ConnectedView({required this.session});
 
   final MachineSessionState session;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_ConnectedView> createState() => _ConnectedViewState();
+}
+
+class _ConnectedViewState extends ConsumerState<_ConnectedView>
+    with TickerProviderStateMixin {
+  TabController? _controller;
+  List<String>? _ids;
+  String _selectedId = 'general';
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  /// Rebuilds the controller only when the visible tab set changes, keeping the
+  /// user on their current tab (by id) instead of resetting to the first one.
+  void _syncController(List<String> ids) {
+    if (_controller != null && listEquals(_ids, ids)) return;
+    _ids = ids;
+    final desired = ids.indexOf(_selectedId);
+    final index = desired >= 0 ? desired : 0;
+    _selectedId = ids[index];
+    _controller?.dispose();
+    final controller =
+        TabController(length: ids.length, vsync: this, initialIndex: index);
+    controller.addListener(() {
+      if (!controller.indexIsChanging && controller.index < ids.length) {
+        _selectedId = ids[controller.index];
+      }
+    });
+    _controller = controller;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final session = widget.session;
     final showPcCard = session.pcCardPresent;
+    final visible = ref.watch(visibleTabsProvider);
+
+    // Empty-panel text reflects why there are no files, not just "No files".
+    String emptyFor(String noFiles) => !session.isConnected
+        ? 'Not connected'
+        : session.busy
+        ? 'Loading\u2026'
+        : noFiles;
+
+    final ids = <String>['general', 'embroidery'];
     final tabs = <Tab>[
       const Tab(text: 'General'),
-      const Tab(text: 'Display'),
-      const Tab(text: 'Embroidery Module'),
-      if (showPcCard) const Tab(text: 'PC Card'),
+      const Tab(text: 'Embroidery'),
     ];
-
-    return DefaultTabController(
-      // Recreate the controller when the tab count changes (PC Card in/out).
-      key: ValueKey(tabs.length),
-      length: tabs.length,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _MachineInfoBar(session: session),
-          Material(
-            color: Theme.of(context).colorScheme.surface,
-            child: TabBar(isScrollable: true, tabs: tabs),
-          ),
-          const Divider(height: 1),
-          Expanded(
-            child: TabBarView(
-              children: [
-                _GeneralTab(session: session),
-                const DisplayTab(),
-                _FilePanel(
-                  title: 'Embroidery module',
-                  location: StorageLocation.embroideryModuleMemory,
-                  files: session.moduleFiles,
-                  enabled: !session.busy,
-                ),
-                if (showPcCard)
-                  _FilePanel(
-                    title: 'PC card',
-                    location: StorageLocation.pcCard,
-                    files: session.pcCardFiles,
-                    enabled: !session.busy,
-                    emptyMessage: 'No files on the PC card',
-                  ),
-              ],
-            ),
-          ),
-        ],
+    final views = <Widget>[
+      _GeneralTab(session: session),
+      _FilePanel(
+        title: 'Embroidery module',
+        location: StorageLocation.embroideryModuleMemory,
+        files: session.moduleFiles,
+        enabled:
+            session.isConnected && session.module != null && !session.busy,
+        emptyMessage: emptyFor('No files'),
       ),
+    ];
+    if (showPcCard) {
+      ids.add('pccard');
+      tabs.add(const Tab(text: 'PC Card'));
+      views.add(
+        _FilePanel(
+          title: 'PC card',
+          location: StorageLocation.pcCard,
+          files: session.pcCardFiles,
+          enabled: !session.busy,
+          emptyMessage: emptyFor('No files on the PC card'),
+        ),
+      );
+    }
+    if (visible.display) {
+      ids.add('display');
+      tabs.add(const Tab(text: 'Display'));
+      views.add(const DisplayTab());
+    }
+    if (visible.debug) {
+      ids.add('debug');
+      tabs.add(const Tab(text: 'Debug'));
+      views.add(const DebugTab());
+    }
+
+    _syncController(ids);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _MachineInfoBar(session: session),
+        Material(
+          color: Theme.of(context).colorScheme.surface,
+          child: TabBar(
+            controller: _controller,
+            isScrollable: true,
+            tabs: tabs,
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: TabBarView(controller: _controller, children: views),
+        ),
+      ],
     );
   }
 }
@@ -591,45 +759,180 @@ class _GeneralTab extends StatelessWidget {
   }
 }
 
-/// Grouped list of machine information (Sewing Machine / Embroidery Module).
-class _MachineInfoList extends StatelessWidget {
+/// A single machine-information entry: either a section header or a name/value
+/// row.
+class _InfoEntry {
+  final String name;
+  final String value;
+  final bool isGroup;
+
+  const _InfoEntry.group(this.name) : value = '', isGroup = true;
+  const _InfoEntry.row(this.name, this.value) : isGroup = false;
+}
+
+/// Grouped list of machine information (Sewing Machine / Embroidery Module /
+/// Communication). Communication counters are sampled at most once every two
+/// seconds and the UI only rebuilds when a value actually changes.
+class _MachineInfoList extends ConsumerStatefulWidget {
   const _MachineInfoList({required this.session});
 
   final MachineSessionState session;
 
+  @override
+  ConsumerState<_MachineInfoList> createState() => _MachineInfoListState();
+}
+
+class _MachineInfoListState extends ConsumerState<_MachineInfoList> {
+  Timer? _timer;
+  int _bytesIn = 0;
+  int _bytesOut = 0;
+  int _framesIn = 0;
+  int _framesOut = 0;
+  int? _baud;
+
+  @override
+  void initState() {
+    super.initState();
+    _sync(initial: true);
+    _timer = Timer.periodic(const Duration(seconds: 2), (_) => _sync());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _sync({bool initial = false}) {
+    final log = ref.read(trafficLogProvider);
+    final baud = ref.read(machineSessionProvider).baudRate;
+    final changed =
+        _bytesIn != log.bytesReceived ||
+        _bytesOut != log.bytesSent ||
+        _framesIn != log.framesReceived ||
+        _framesOut != log.framesSent ||
+        _baud != baud;
+    if (!changed) return;
+    _bytesIn = log.bytesReceived;
+    _bytesOut = log.bytesSent;
+    _framesIn = log.framesReceived;
+    _framesOut = log.framesSent;
+    _baud = baud;
+    if (!initial) setState(() {});
+  }
+
   static String _value(String? v) => (v == null || v.isEmpty) ? 'Unknown' : v;
+
+  List<_InfoEntry> _buildEntries() {
+    final session = widget.session;
+    final sewing = session.sewing;
+    final module = session.module;
+
+    return [
+      const _InfoEntry.group('Sewing Machine'),
+      _InfoEntry.row('Firmware Version', _value(sewing?.version)),
+      _InfoEntry.row('Language', _value(sewing?.language)),
+      _InfoEntry.row('Manufacturer', _value(sewing?.manufacturer)),
+      _InfoEntry.row('Firmware Date', _value(sewing?.date)),
+      // Until connected the module state is unknown, not "not attached".
+      _InfoEntry.row(
+        'Embroidery Module',
+        !session.isConnected
+            ? 'Unknown'
+            : module == null
+            ? 'Not Attached'
+            : (module.pcCardInserted ? 'Connected + PC Card' : 'Connected'),
+      ),
+      if (module != null) ...[
+        const _InfoEntry.group('Embroidery Module'),
+        _InfoEntry.row('Firmware Version', _value(module.version)),
+        _InfoEntry.row('Manufacturer', _value(module.manufacturer)),
+        _InfoEntry.row('Firmware Date', _value(module.date)),
+        _InfoEntry.row(
+          'PC Card',
+          module.pcCardInserted ? 'Inserted' : 'Not Inserted',
+        ),
+      ],
+      const _InfoEntry.group('Communication'),
+      _InfoEntry.row('Bytes In', '$_bytesIn'),
+      _InfoEntry.row('Bytes Out', '$_bytesOut'),
+      _InfoEntry.row('Frames In', '$_framesIn'),
+      _InfoEntry.row('Frames Out', '$_framesOut'),
+      _InfoEntry.row('Baud Rate', _baud != null ? '$_baud' : 'N/A'),
+    ];
+  }
+
+  /// All name/value rows as `name<tab>value` lines, for the Copy All action.
+  static String _allRowsText(List<_InfoEntry> entries) {
+    final sb = StringBuffer();
+    for (final e in entries) {
+      if (!e.isGroup) sb.writeln('${e.name}\t${e.value}');
+    }
+    return sb.toString().trimRight();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final sewing = session.sewing;
-    final module = session.module;
+    final entries = _buildEntries();
+    final allText = _allRowsText(entries);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _infoGroup(context, 'Sewing Machine'),
-        _infoRow(context, 'Firmware Version', _value(sewing?.version)),
-        _infoRow(context, 'Language', _value(sewing?.language)),
-        _infoRow(context, 'Manufacturer', _value(sewing?.manufacturer)),
-        _infoRow(context, 'Firmware Date', _value(sewing?.date)),
-        _infoRow(
-          context,
-          'Embroidery Module',
-          module != null ? 'Attached' : 'Not Attached',
-        ),
-        if (module != null) ...[
-          _infoGroup(context, 'Embroidery Module'),
-          _infoRow(context, 'Firmware Version', _value(module.version)),
-          _infoRow(context, 'Manufacturer', _value(module.manufacturer)),
-          _infoRow(context, 'Firmware Date', _value(module.date)),
-          _infoRow(
-            context,
-            'PC Card',
-            module.pcCardInserted ? 'Inserted' : 'Not Inserted',
-          ),
-        ],
-        const _CommunicationSection(),
+        for (final e in entries)
+          if (e.isGroup)
+            _infoGroup(context, e.name)
+          else
+            _InfoRow(name: e.name, value: e.value, allText: allText),
       ],
+    );
+  }
+}
+
+/// A machine-information row that offers "Copy" (this row) and "Copy All"
+/// (every row) from a right-click / long-press context menu.
+class _InfoRow extends StatelessWidget {
+  const _InfoRow({
+    required this.name,
+    required this.value,
+    required this.allText,
+  });
+
+  final String name;
+  final String value;
+  final String allText;
+
+  Future<void> _showMenu(BuildContext context, Offset globalPosition) async {
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox;
+    final selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        globalPosition & const Size(1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: const [
+        PopupMenuItem(value: 'copy', child: Text('Copy')),
+        PopupMenuItem(value: 'copyAll', child: Text('Copy All')),
+      ],
+    );
+    switch (selected) {
+      case 'copy':
+        await Clipboard.setData(ClipboardData(text: '$name\t$value'));
+        break;
+      case 'copyAll':
+        await Clipboard.setData(ClipboardData(text: allText));
+        break;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onSecondaryTapDown: (d) => _showMenu(context, d.globalPosition),
+      onLongPressStart: (d) => _showMenu(context, d.globalPosition),
+      child: _infoRow(context, name, value),
     );
   }
 }
@@ -670,71 +973,6 @@ Widget _infoRow(BuildContext context, String name, String value) {
       ],
     ),
   );
-}
-
-/// Live serial/relay statistics. Values are sampled at most once every two
-/// seconds and the UI is only rebuilt when one of them actually changes.
-class _CommunicationSection extends ConsumerStatefulWidget {
-  const _CommunicationSection();
-
-  @override
-  ConsumerState<_CommunicationSection> createState() =>
-      _CommunicationSectionState();
-}
-
-class _CommunicationSectionState extends ConsumerState<_CommunicationSection> {
-  Timer? _timer;
-  int _bytesIn = 0;
-  int _bytesOut = 0;
-  int _framesIn = 0;
-  int _framesOut = 0;
-  int? _baud;
-
-  @override
-  void initState() {
-    super.initState();
-    _sync(initial: true);
-    _timer = Timer.periodic(const Duration(seconds: 2), (_) => _sync());
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  void _sync({bool initial = false}) {
-    final log = ref.read(trafficLogProvider);
-    final baud = ref.read(machineSessionProvider).baudRate;
-    final changed =
-        _bytesIn != log.bytesReceived ||
-        _bytesOut != log.bytesSent ||
-        _framesIn != log.framesReceived ||
-        _framesOut != log.framesSent ||
-        _baud != baud;
-    if (!changed) return;
-    _bytesIn = log.bytesReceived;
-    _bytesOut = log.bytesSent;
-    _framesIn = log.framesReceived;
-    _framesOut = log.framesSent;
-    _baud = baud;
-    if (!initial) setState(() {});
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _infoGroup(context, 'Communication'),
-        _infoRow(context, 'Bytes In', '$_bytesIn'),
-        _infoRow(context, 'Bytes Out', '$_bytesOut'),
-        _infoRow(context, 'Frames In', '$_framesIn'),
-        _infoRow(context, 'Frames Out', '$_framesOut'),
-        _infoRow(context, 'Baud Rate', _baud != null ? '$_baud' : 'N/A'),
-      ],
-    );
-  }
 }
 
 class _MachineInfoBar extends ConsumerWidget {
@@ -829,7 +1067,10 @@ class _FilePanel extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final viewMode = ref.watch(fileViewModeProvider);
+    final viewMode = ref.watch(fileViewModeProvider).of(location);
+    // While a download is running, ignore taps so patterns can't be opened
+    // multiple times over the same busy connection.
+    final busy = ref.watch(machineSessionProvider.select((s) => s.busy));
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -845,8 +1086,9 @@ class _FilePanel extends ConsumerWidget {
               ),
               _ViewModeToggle(
                 mode: viewMode,
-                onChanged: (m) =>
-                    ref.read(fileViewModeProvider.notifier).set(m),
+                onChanged: (m) => ref
+                    .read(fileViewModeProvider.notifier)
+                    .set(location, m),
               ),
               TextButton.icon(
                 icon: const Icon(Icons.upload_file, size: 18),
@@ -877,6 +1119,7 @@ class _FilePanel extends ConsumerWidget {
                   itemCount: files.length,
                   itemBuilder: (context, i) => EmbroideryFileCard(
                     file: files[i],
+                    tappable: !busy,
                     onAction: (action) =>
                         _handleAction(context, ref, action, files[i]),
                   ),
@@ -903,6 +1146,9 @@ class _FilePanel extends ConsumerWidget {
     final notifier = ref.read(machineSessionProvider.notifier);
     switch (action) {
       case FileAction.view:
+        // A double-tap fires two view actions; skip the second while the first
+        // download is still running instead of reporting a false read error.
+        if (ref.read(machineSessionProvider).busy) return;
         final pattern = await notifier.loadPattern(location, file);
         if (!context.mounted) return;
         if (pattern == null) {

@@ -295,22 +295,31 @@ class MachineController {
               _addrNames, filesOnPage * 32);
           if (!names.success || names.binaryData == null) return null;
 
+          // Surface the names/attributes for the whole page first, then fill in
+          // the previews so thumbnails stream in without holding back the names.
+          final pageStart = fileIndex;
+          final pageFiles = <EmbroideryFile>[];
           for (var i = 0; i < filesOnPage; i++) {
             final file = EmbroideryFile(
-              fileId: fileIndex,
+              fileId: pageStart + i,
               fileAttributes: attrs.binaryData![i],
               fileName: _extractName(names.binaryData!, i * 32),
             );
             if (file.fileName.isEmpty) file.fileName = '${file.fileId}';
-
-            if (loadPreviews) {
-              await _loadPreview(file, i, useFastCacheLookup);
-            }
-
             files.add(file);
-            fileIndex++;
-            progress?.call(fileIndex, totalFileCount);
+            pageFiles.add(file);
             onFileLoaded?.call(file);
+          }
+          fileIndex += filesOnPage;
+
+          if (loadPreviews) {
+            for (var i = 0; i < pageFiles.length; i++) {
+              await _loadPreview(pageFiles[i], i, useFastCacheLookup);
+              progress?.call(pageStart + i + 1, totalFileCount);
+              onFileLoaded?.call(pageFiles[i]);
+            }
+          } else {
+            progress?.call(fileIndex, totalFileCount);
           }
 
           if (fileIndex < totalFileCount) {

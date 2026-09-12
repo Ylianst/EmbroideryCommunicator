@@ -73,13 +73,14 @@ class DebugWindowBridge {
     if (log == null) return const [];
 
     final snapshot = [
-      for (final e in log.events) encodeTrafficEntry(e.sent, e.data, e.time),
+      for (final e in log.events)
+        encodeTrafficEntry(e.sent, e.data, e.time, relay: log.isRelay),
     ];
     _forward = log.stream.listen((e) {
       DesktopMultiWindow.invokeMethod(
         windowId,
         kDebugMethodTraffic,
-        encodeTrafficEntry(e.sent, e.data, e.time),
+        encodeTrafficEntry(e.sent, e.data, e.time, relay: log.isRelay),
       ).catchError((_) {
         // The window was closed; stop streaming until it reopens.
         _forward?.cancel();

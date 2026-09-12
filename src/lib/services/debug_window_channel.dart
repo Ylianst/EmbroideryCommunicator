@@ -20,22 +20,28 @@ const String kDebugMethodClear = 'debugClear';
 
 /// A traffic event as seen by the detached debug window.
 class DebugTrafficEntry {
-  const DebugTrafficEntry(this.sent, this.data, this.time);
+  const DebugTrafficEntry(this.sent, this.data, this.time, this.relay);
 
   final bool sent;
   final Uint8List data;
   final DateTime time;
+
+  /// Whether the link is a network relay, so the command view decodes the
+  /// framed relay RPC protocol instead of the raw serial protocol.
+  final bool relay;
 }
 
 /// Serialises a traffic event for transport over the window channel.
 Map<String, Object?> encodeTrafficEntry(
   bool sent,
   Uint8List data,
-  DateTime time,
-) => {
+  DateTime time, {
+  bool relay = false,
+}) => {
   'sent': sent,
   'data': data,
   't': time.millisecondsSinceEpoch,
+  'relay': relay,
 };
 
 /// Rebuilds a [DebugTrafficEntry] from a transported map.
@@ -44,4 +50,5 @@ DebugTrafficEntry decodeTrafficEntry(Map<Object?, Object?> value) =>
       value['sent'] as bool,
       value['data'] as Uint8List,
       DateTime.fromMillisecondsSinceEpoch(value['t'] as int),
+      (value['relay'] as bool?) ?? false,
     );

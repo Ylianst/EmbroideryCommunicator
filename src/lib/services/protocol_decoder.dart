@@ -1,5 +1,10 @@
 import 'dart:typed_data';
 
+/// Selects how the decoder interprets the transmitted byte stream: the raw
+/// Bernina serial protocol, or the framed relay RPC protocol used over the
+/// network (see `docs/TcpProtocol.md`).
+enum ProtocolMode { serial, relay }
+
 /// A single command decoded from the software -> machine (TX) byte stream.
 class DecodedCommand {
   DecodedCommand(this.time, this.name, this.raw, this.arguments);
@@ -22,6 +27,16 @@ class ProtocolCommandDecoder {
   final List<DecodedCommand> _out = [];
   final List<int> _codes = [];
   final List<DateTime> _times = [];
+
+  ProtocolMode _mode = ProtocolMode.serial;
+
+  /// Switches the decoding mode. Any buffered/decoded state is discarded so the
+  /// stream is re-parsed cleanly under the new protocol.
+  void setMode(ProtocolMode mode) {
+    if (mode == _mode) return;
+    _mode = mode;
+    reset();
+  }
 
   /// Fixed, self-delimiting command words handled by longest-prefix matching.
   static const Map<String, String> _fixed = {
@@ -49,7 +64,11 @@ class ProtocolCommandDecoder {
       _codes.add(b);
       _times.add(time);
     }
-    _drain();
+    if (_mode == ProtocolMode.relay) {
+      _drainRelay();
+    } else {
+      _drain();
+    }
   }
 
   void _drain() {
@@ -60,6 +79,80 @@ class ProtocolCommandDecoder {
         _flushOneUnknown();
       }
     }
+  }
+
+  /// Parses the framed relay RPC stream (4-char type + 8 hex id + 8 hex length
+  /// + payload). Only transmitted frames carry commands, so each one maps to a
+  /// single high-level command entry.
+  void _drainRelay() {
+    while (_codes.length >= 20) {
+      final len = int.tryParse(
+        String.fromCharCodes(_codes.sublist(12, 20)),
+        radix: 16,
+      );
+      if (len == null) {
+        _flushOneUnknown();
+        continue;
+      }
+      if (_codes.length < 20 + len) return; // wait for the full payload
+      final type = String.fromCharCodes(_codes.sublist(0, 4));
+      final payload = _codes.sublist(20, 20 + len);
+      _emitRelay(type, payload, 20 + len);
+    }
+  }
+
+  void _emitRelay(String type, List<int> payload, int consumed) {
+    final ascii = String.fromCharCodes(payload).toUpperCase();
+    String name;
+    String args;
+    switch (type) {
+      case 'READ':
+        name = 'Read';
+        args = 'addr 0x$ascii';
+        break;
+      case 'LRED':
+        name = 'Large Read';
+        args = 'addr 0x$ascii';
+        break;
+      case 'WRIT':
+        name = 'Write';
+        final addr = ascii.length >= 6 ? ascii.substring(0, 6) : ascii;
+        final dataHex = ascii.length > 6 ? ascii.substring(6) : '';
+        final bytes = dataHex.length ~/ 2;
+        args = dataHex.isEmpty
+            ? 'addr 0x$addr'
+            : 'addr 0x$addr · data $dataHex ($bytes byte${bytes == 1 ? '' : 's'})';
+        break;
+      case 'UPLD':
+        name = 'Upload';
+        final addr = ascii.length >= 4 ? ascii.substring(0, 4) : ascii;
+        args = 'addr 0x${addr}00 (256 bytes)';
+        break;
+      case 'CSUM':
+        name = 'Sum';
+        final addr = ascii.length >= 6 ? ascii.substring(0, 6) : ascii;
+        final blockLen = ascii.length >= 12 ? ascii.substring(6, 12) : '';
+        args = 'addr 0x$addr · len 0x$blockLen';
+        break;
+      case 'RSET':
+        name = 'Reset';
+        args = '';
+        break;
+      case 'SOPE':
+        name = 'Session start';
+        args = '';
+        break;
+      case 'SCLO':
+        name = 'Session end';
+        args = '';
+        break;
+      default:
+        name = 'Unknown';
+        args = '';
+    }
+    _out.add(DecodedCommand(_times[0], name, type, args));
+    _codes.removeRange(0, consumed);
+    _times.removeRange(0, consumed);
   }
 
   /// Tries to recognise a command at the front of the buffer.

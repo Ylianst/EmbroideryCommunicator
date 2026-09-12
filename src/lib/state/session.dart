@@ -124,10 +124,11 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
     state = state.copyWith(
         status: ConnectionState.connecting, message: 'Connecting…');
 
-    ref.read(trafficLogProvider).resetCounters();
+    ref.read(trafficLogProvider)
+      ..resetCounters()
+      ..isRelay = false;
     final factory = ref.read(transportFactoryProvider);
     final timing = ref.read(protocolTimingProvider);
-
     for (final baud in _connectBauds) {
       final transport =
           TrafficTap(factory(port, baudRate: baud), ref.read(trafficLogProvider));
@@ -181,7 +182,9 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
     state = state.copyWith(
         status: ConnectionState.connecting, message: 'Connecting to $label…');
 
-    ref.read(trafficLogProvider).resetCounters();
+    ref.read(trafficLogProvider)
+      ..resetCounters()
+      ..isRelay = true;
     final RelayConnection connection = TrafficTapConnection(
       base,
       ref.read(trafficLogProvider),
@@ -220,7 +223,12 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
   Future<void> refresh() async {
     final controller = _controller;
     if (controller == null) return;
-    state = state.copyWith(busy: true, message: 'Reading machine…');
+    state = state.copyWith(
+      busy: true,
+      message: 'Reading machine…',
+      moduleFiles: const [],
+      pcCardFiles: const [],
+    );
 
     final firmware = await controller.readAllFirmwareInfo();
     final pcCard = firmware?.embroideryModule?.pcCardInserted ?? false;
@@ -230,21 +238,47 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
       pcCardPresent: pcCard,
     );
 
-    final moduleFiles = await controller.readEmbroideryFiles(
-            StorageLocation.embroideryModuleMemory, loadPreviews: true) ??
-        <EmbroideryFile>[];
-    final pcFiles = pcCard
-        ? await controller.readEmbroideryFiles(StorageLocation.pcCard,
-                loadPreviews: true) ??
-            <EmbroideryFile>[]
-        : <EmbroideryFile>[];
+    // Publish each file as it arrives so names and thumbnails appear
+    // incrementally instead of only after the whole listing is downloaded.
+    final moduleFiles = <EmbroideryFile>[];
+    await controller.readEmbroideryFiles(
+      StorageLocation.embroideryModuleMemory,
+      loadPreviews: true,
+      onFileLoaded: (file) {
+        _upsertFile(moduleFiles, file);
+        state = state.copyWith(moduleFiles: List.of(moduleFiles));
+      },
+    );
+
+    final pcFiles = <EmbroideryFile>[];
+    if (pcCard) {
+      await controller.readEmbroideryFiles(
+        StorageLocation.pcCard,
+        loadPreviews: true,
+        onFileLoaded: (file) {
+          _upsertFile(pcFiles, file);
+          state = state.copyWith(pcCardFiles: List.of(pcFiles));
+        },
+      );
+    }
 
     state = state.copyWith(
-      moduleFiles: moduleFiles,
-      pcCardFiles: pcFiles,
+      moduleFiles: List.of(moduleFiles),
+      pcCardFiles: List.of(pcFiles),
       busy: false,
       message: 'Ready',
     );
+  }
+
+  /// Inserts [file] into [list] or replaces the existing entry with the same
+  /// id (the name arrives first, then the same file again with its thumbnail).
+  static void _upsertFile(List<EmbroideryFile> list, EmbroideryFile file) {
+    final index = list.indexWhere((f) => f.fileId == file.fileId);
+    if (index >= 0) {
+      list[index] = file;
+    } else {
+      list.add(file);
+    }
   }
 
   /// Downloads a file's full contents (main + extra data).
@@ -335,6 +369,9 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
 
   /// Reads memory from [start] up to (not including) [end] for a memory dump.
   ///
+  /// [target] selects which processor to read: the sewing machine, or the
+  /// embroidery module (which requires opening its serial session first).
+  ///
   /// On a read error the block is retried up to [maxRetries] times, pausing
   /// [retryDelay] between attempts. If the read still fails (or the dump is
   /// cancelled) the bytes collected so far are returned so the caller can save
@@ -343,18 +380,48 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
   Future<Uint8List?> dumpMemory({
     required int start,
     required int end,
+    SessionMode target = SessionMode.sewingMachine,
     void Function(int done, int total)? progress,
     int maxRetries = 10,
     Duration retryDelay = const Duration(seconds: 3),
   }) async {
-    final engine = _controller?.engine;
-    if (engine == null || end <= start) return null;
+    final controller = _controller;
+    final engine = controller?.engine;
+    if (controller == null || engine == null || end <= start) return null;
     _dumpCancelled = false;
     state = state.copyWith(busy: true, message: 'Dumping memory…');
+
+    // Suppress per-block traffic logging so a large dump doesn't flood the
+    // debug views with data or slow the transfer down. Counters still update.
+    final log = ref.read(trafficLogProvider);
+    final wasRecording = log.recordEvents;
+    log.recordEvents = false;
+
+    var moduleSession = false;
     final builder = BytesBuilder();
     final total = end - start;
     var addr = start;
     try {
+      // Point the serial session at the requested processor before reading.
+      if (target == SessionMode.embroideryModule) {
+        final mode = await controller.getCurrentSessionMode();
+        if (mode == SessionMode.sewingMachine) {
+          final started = await engine.sessionStart();
+          if (!started.success) {
+            state = state.copyWith(message: 'Embroidery module not available');
+            return null;
+          }
+        } else if (mode == null) {
+          state = state.copyWith(message: 'Embroidery module not available');
+          return null;
+        }
+        moduleSession = true;
+        await engine.protocolReset();
+      } else {
+        await engine.sessionEnd();
+        await engine.protocolReset();
+      }
+
       while (addr < end) {
         if (_dumpCancelled) break;
         final remaining = end - addr;
@@ -383,9 +450,12 @@ class MachineSessionNotifier extends Notifier<MachineSessionState> {
         addr += chunk;
         progress?.call(addr - start, total);
       }
+      state = state.copyWith(message: 'Ready');
       return builder.toBytes();
     } finally {
-      state = state.copyWith(busy: false, message: 'Ready');
+      if (moduleSession) await engine.sessionEnd();
+      log.recordEvents = wasRecording;
+      state = state.copyWith(busy: false);
     }
   }
 

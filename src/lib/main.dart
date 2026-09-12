@@ -1,10 +1,12 @@
 ﻿import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'app.dart';
 import 'services/update_service.dart';
+import 'state/preferences.dart';
 import 'ui/screens/debug_window.dart';
 
 const _desktopPlatforms = {
@@ -40,6 +42,12 @@ Future<void> main(List<String> args) async {
   // check for and install application updates from the Help menu.
   await UpdateService.instance.init();
 
-  runApp(const ProviderScope(child: EmbroideryCommunicatorApp()));
+  final prefs = await SharedPreferences.getInstance();
+  runApp(
+    ProviderScope(
+      overrides: [sharedPreferencesProvider.overrideWithValue(prefs)],
+      child: const EmbroideryCommunicatorApp(),
+    ),
+  );
 }
 

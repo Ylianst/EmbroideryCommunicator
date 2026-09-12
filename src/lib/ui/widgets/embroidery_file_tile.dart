@@ -86,10 +86,14 @@ class EmbroideryFileCard extends StatefulWidget {
     super.key,
     required this.file,
     required this.onAction,
+    this.tappable = true,
   });
 
   final EmbroideryFile file;
   final void Function(FileAction) onAction;
+
+  /// When false, tapping the card does nothing (e.g. a download is in flight).
+  final bool tappable;
 
   @override
   State<EmbroideryFileCard> createState() => _EmbroideryFileCardState();
@@ -112,7 +116,9 @@ class _EmbroideryFileCardState extends State<EmbroideryFileCard> {
       clipBehavior: Clip.antiAlias,
       margin: EdgeInsets.zero,
       child: InkWell(
-        onTap: () => widget.onAction(FileAction.view),
+        onTap: widget.tappable
+            ? () => widget.onAction(FileAction.view)
+            : null,
         onTapDown: (d) => _lastPointer = d.globalPosition,
         onSecondaryTapDown: (d) => _lastPointer = d.globalPosition,
         onSecondaryTap: _openMenu,
