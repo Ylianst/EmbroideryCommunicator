@@ -95,6 +95,129 @@ void main() {
     expect(result.binaryData, expected);
   });
 
+  for (final length in [33, 300, 558]) {
+    test('missing middle bytes recover all $length bytes and verify checksum', () async {
+      expect((await engine.sessionStart()).success, isTrue);
+      machine.largeReadOmittedRange = (start: 56, end: 167);
+      final expected = List.generate(length, (i) => (i * 17 + 79) & 0xFF);
+      writeMem(0x031007, expected);
+      final progress = <int>[];
+
+      final result = await engine.readMemoryBlockChecked(
+        0x031007,
+        length,
+        progress: (read, total) {
+          expect(total, length);
+          progress.add(read);
+        },
+      );
+
+      expect(result.success, isTrue, reason: result.errorMessage);
+      expect(result.binaryData, expected);
+      expect(progress.last, length);
+      expect(progress, orderedEquals(progress.toList()..sort()));
+      expect(machine.commandLog, contains('R031007'));
+      expect(machine.commandLog.where((c) => c.startsWith('N')).length, 1);
+      expect(machine.commandLog.last, startsWith('L031007'));
+      // The fallback must leave the parser synchronized for the next command.
+      expect((await engine.read(0x031007)).binaryData, expected.take(32));
+    });
+  }
+
+  test('short N fallback propagates a failed R read', () async {
+    machine.largeReadByteLimit = 145;
+    machine.failedReadAddresses.add(0x031020);
+
+    final result = await engine.readMemoryBlock(0x031000, 256);
+
+    expect(result.success, isFalse);
+    expect(result.errorMessage, contains('031020'));
+    expect(machine.commandLog, isNot(contains('R031040')));
+  });
+
+  test('short N fallback still rejects checksum mismatch', () async {
+    machine.largeReadByteLimit = 145;
+    machine.checksumDelta = 1;
+
+    final result = await engine.readMemoryBlockChecked(0x031000, 64);
+
+    expect(result.success, isFalse);
+    expect(result.errorMessage, contains('Checksum mismatch'));
+  });
+
+  test('learned module fallback survives sessions but leaves sewing N enabled', () async {
+    final expected = List.generate(558, (i) => (i * 19) & 0xFF);
+    writeMem(0x032000, expected);
+    machine.largeReadByteLimit = 145;
+    expect((await engine.sessionStart()).success, isTrue);
+
+    final first = await engine.readMemoryBlockChecked(0x032000, 558);
+    expect(first.success, isTrue, reason: first.errorMessage);
+    expect(first.binaryData, expected);
+    expect(machine.commandLog.where((c) => c.startsWith('N')), ['N032000']);
+
+    expect((await engine.protocolReset()).success, isTrue);
+    expect((await engine.largeRead(0x032000)).binaryData, expected.take(256));
+    expect(machine.commandLog.where((c) => c.startsWith('N')).length, 1);
+    expect((await engine.sessionEnd()).success, isTrue);
+
+    machine.largeReadByteLimit = null; // Sewing processor has working N reads.
+    expect((await engine.largeRead(0x032000)).binaryData, expected.take(256));
+    expect(machine.commandLog.where((c) => c.startsWith('N')).length, 2);
+
+    machine.largeReadByteLimit = 145;
+    expect((await engine.sessionStart()).success, isTrue);
+    expect((await engine.readMemoryBlock(0x032000, 558)).binaryData, expected);
+    expect(machine.commandLog.where((c) => c.startsWith('N')).length, 2);
+
+    // A new connection must probe again rather than inherit stale knowledge.
+    await engine.detach();
+    engine.attach();
+    expect((await engine.sessionStart()).success, isTrue);
+    expect((await engine.largeRead(0x032000)).binaryData, expected.take(256));
+    expect(machine.commandLog.where((c) => c.startsWith('N')).length, 3);
+  });
+
+  test('direct largeRead learns fallback when already attached in module mode', () async {
+    writeMem(0x57FF80, [0x00, 0xCE]);
+    writeMem(0x033000, List.generate(256, (i) => i));
+    expect((await engine.read(0x57FF80)).success, isTrue);
+    machine.largeReadByteLimit = 145;
+
+    expect((await engine.largeRead(0x033000)).binaryData, List.generate(256, (i) => i));
+    expect((await engine.largeRead(0x033000)).binaryData, List.generate(256, (i) => i));
+    expect(machine.commandLog.where((c) => c.startsWith('N')).length, 1);
+
+    // Observing sewing mode must turn the fast path back on too.
+    writeMem(0x57FF80, [0xB4, 0xA5]);
+    expect((await engine.read(0x57FF80)).success, isTrue);
+    machine.largeReadByteLimit = null;
+    expect((await engine.largeRead(0x033000)).success, isTrue);
+    expect(machine.commandLog.where((c) => c.startsWith('N')).length, 2);
+  });
+
+  test('successful baud change retries N on the new module connection settings', () async {
+    expect((await engine.sessionStart()).success, isTrue);
+    machine.largeReadOmittedRange = (start: 56, end: 167);
+    expect((await engine.largeRead(0x033000)).success, isTrue);
+    expect(machine.commandLog.where((c) => c.startsWith('N')).length, 1);
+
+    expect(await engine.changeTo57600Baud(), isTrue);
+    expect(machine.baudRate, 57600);
+    machine.largeReadOmittedRange = null;
+    expect((await engine.sessionStart()).success, isTrue);
+    expect((await engine.largeRead(0x033000)).success, isTrue);
+    expect(machine.commandLog.where((c) => c.startsWith('N')).length, 2);
+  });
+
+  test('healthy module keeps using N across bulk reads', () async {
+    expect((await engine.sessionStart()).success, isTrue);
+    expect((await engine.readMemoryBlock(0x034000, 512)).success, isTrue);
+    expect((await engine.largeRead(0x034200)).success, isTrue);
+    expect(machine.commandLog.where((c) => c.startsWith('N')).length, 3);
+    expect(machine.commandLog.where((c) => c.startsWith('R') && c != 'RF?'), isEmpty);
+  });
+
   test('upload writes exactly 256 aligned bytes', () async {
     final data =
         Uint8List.fromList(List.generate(256, (i) => (i ^ 0x5A) & 0xFF));

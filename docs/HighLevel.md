@@ -126,8 +126,8 @@ Every high-level operation follows the same envelope:
 1. **Enter embroidery mode.** Auto-baud (`RF?`), switch the bridge to the module
    (`TrME`), confirm (`YQ` → `O`). Verify the mode by reading `0x57FF80`
    (`B4 A5` = sewing machine is the active processor → switch needed).
-2. **Read the firmware version** from `0x200100` (`N200100`). The `N` read yields
-   version, language, manufacturer and date; the leading `NMMV0x.xx` is parsed to
+2. **Read the firmware version** from `0x200100` using three 32-byte `R` reads.
+   These yield version, language, manufacturer and date; the banner is parsed to
    `moduleVersionCode` and drives the gates in [§2](#2-firmware-versions-and-device-families).
 3. **Select the storage source**: invoke `0x00A1` (module memory) or `0x0051`
    (PC Card). For the card, first confirm presence via `0xFFFED9` (`0x83` =

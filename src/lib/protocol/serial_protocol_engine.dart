@@ -6,6 +6,7 @@ import '../transport/transport.dart';
 import 'command_result.dart';
 import 'protocol_engine.dart';
 import 'protocol_timing.dart';
+import 'session_mode_register.dart';
 
 /// Character codes used internally by the protocol handshakes.
 const int _cR = 0x52; // 'R'
@@ -93,6 +94,10 @@ class SerialProtocolEngine implements ProtocolEngine {
   _PendingCommand? _current;
   bool _transmissionComplete = false;
 
+  bool _moduleSession = false;
+  // A module's compatibility is remembered across sessions on this connection.
+  bool _moduleNeedsSmallReads = false;
+
   /// Begins listening to the transport. Call once after [Transport.open].
   void attach() {
     _sub ??= transport.incoming.listen(_onData);
@@ -105,6 +110,8 @@ class SerialProtocolEngine implements ProtocolEngine {
     _buffer = '';
     _current = null;
     _transmissionComplete = false;
+    _moduleSession = false;
+    _moduleNeedsSmallReads = false;
   }
 
   // ---------------------------------------------------------------------------
@@ -113,13 +120,24 @@ class SerialProtocolEngine implements ProtocolEngine {
 
   /// Read command (R + 6 hex): returns 32 bytes of data.
   @override
-  Future<CommandResult> read(int address) =>
-      _mutex.run(() => _executeCommand('R${_addr(address)}'));
+  Future<CommandResult> read(int address) => _mutex.run(() async {
+    final result = await _executeCommand('R${_addr(address)}');
+    final data = result.binaryData;
+    // The controller may attach while the bridge is already in module mode.
+    if (address == SessionModeRegister.address &&
+        result.success &&
+        data != null &&
+        data.length >= SessionModeRegister.byteLength) {
+      _moduleSession = !SessionModeRegister.isSewingMachine(data);
+    }
+    return result;
+  });
 
-  /// Large Read command (N + 6 hex): returns 256 bytes of data.
+  /// Reads 256 bytes, retrying failed or incomplete N transfers with R commands.
+  /// A failed module N read disables N for module sessions until detach().
   @override
   Future<CommandResult> largeRead(int address) =>
-      _mutex.run(() => _executeCommand('N${_addr(address)}'));
+      _mutex.run(() => _largeReadImpl(address, 256));
 
   /// Write command (W + 6 hex + hex data + ?). Maximum 32 bytes.
   @override
@@ -396,6 +414,34 @@ class SerialProtocolEngine implements ProtocolEngine {
   // Block transfer implementations (lock-free)
   // ---------------------------------------------------------------------------
 
+  Future<CommandResult> _largeReadImpl(int address, int length) async {
+    if (!transport.isOpen) return CommandResult.failure('Not connected');
+    if (!(_moduleSession && _moduleNeedsSmallReads)) {
+      final result = await _executeCommand('N${_addr(address)}');
+      if (result.success && result.binaryData != null &&
+          result.binaryData!.length >= 256) {
+        return result;
+      }
+      // Keep healthy sewing-machine transfers fast even after a module N fails.
+      if (_moduleSession) _moduleNeedsSmallReads = true;
+    }
+
+    final data = Uint8List(length);
+    for (var offset = 0; offset < length; offset += 32) {
+      final result = await _executeCommand('R${_addr(address + offset)}');
+      final bytes = result.binaryData;
+      final count = math.min(32, length - offset);
+      if (!result.success || bytes == null || bytes.length < count) {
+        return CommandResult.failure(
+          'Read failed at 0x${_addr(address + offset)}: '
+          '${result.errorMessage ?? "Short R response"}',
+        );
+      }
+      data.setRange(offset, offset + count, bytes);
+    }
+    return CommandResult.ok(binaryData: data);
+  }
+
   Future<CommandResult> _readBlock(int address, int length,
       void Function(int, int)? progress) async {
     if (length <= 0) return CommandResult.failure('Length must be > 0');
@@ -410,7 +456,7 @@ class SerialProtocolEngine implements ProtocolEngine {
       final CommandResult result;
       final int chunk;
       if (remaining > 32) {
-        result = await _executeCommand('N${_addr(addr)}');
+        result = await _largeReadImpl(addr, math.min(256, remaining));
         chunk = math.min(256, remaining);
       } else {
         result = await _executeCommand('R${_addr(addr)}');
@@ -586,6 +632,7 @@ class SerialProtocolEngine implements ProtocolEngine {
       return CommandResult.failure("Did not receive 'O' after TrMEYQ");
     }
     _buffer = '';
+    _moduleSession = true;
     return CommandResult.ok(response: 'SessionStart completed');
   }
 
@@ -605,6 +652,7 @@ class SerialProtocolEngine implements ProtocolEngine {
       }
       if (allEchoed) {
         _buffer = '';
+        _moduleSession = false;
         return CommandResult.ok(response: 'SessionEnd completed');
       }
       if (attempt < maxRetries - 1) {
@@ -645,6 +693,9 @@ class SerialProtocolEngine implements ProtocolEngine {
     }
     if (!await _waitForChar(_cO, timing.confirmationTimeout)) return false;
     _buffer = '';
+    // TrME returns to sewing mode; N compatibility depends on the new baud.
+    _moduleSession = false;
+    _moduleNeedsSmallReads = false;
     return true;
   }
 

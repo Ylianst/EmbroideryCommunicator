@@ -7,6 +7,7 @@ import '../domain/models/firmware_info.dart';
 import 'command_result.dart';
 import 'design_cipher.dart';
 import 'protocol_engine.dart';
+import 'session_mode_register.dart';
 
 /// Delays and retry counts for high-level machine operations.
 ///
@@ -71,7 +72,6 @@ class MachineController {
       moduleVersionCode != 0 && moduleVersionCode < 0x0210;
 
   // Well-known machine addresses.
-  static const int _addrSessionMode = 0x57FF80;
   static const int _addrFirmware = 0x200100;
   static const int _addrPcCard = 0xFFFED9;
   static const int _addrFunction = 0xFFFED0;
@@ -151,10 +151,16 @@ class MachineController {
   /// Reads the current session mode from 0x57FF80 (0xB4A5 => sewing machine).
   Future<SessionMode?> getCurrentSessionMode() async {
     await engine.protocolReset();
-    final result = await engine.read(_addrSessionMode);
+    final result = await engine.read(SessionModeRegister.address);
     final data = result.binaryData;
-    if (!result.success || data == null || data.length < 2) return null;
-    if (data[0] == 0xB4 && data[1] == 0xA5) return SessionMode.sewingMachine;
+    if (!result.success ||
+        data == null ||
+        data.length < SessionModeRegister.byteLength) {
+      return null;
+    }
+    if (SessionModeRegister.isSewingMachine(data)) {
+      return SessionMode.sewingMachine;
+    }
     return SessionMode.embroideryModule;
   }
 
@@ -164,9 +170,8 @@ class MachineController {
     if (mode == null) return null;
     final isSewing = mode == SessionMode.sewingMachine;
 
-    final result = await engine.largeRead(_addrFirmware);
-    final data = result.binaryData;
-    if (!result.success || data == null) return null;
+    final data = await _readFirmwareIdentity();
+    if (data == null) return null;
 
     var index = 0;
     final version = _readNullString(data, index);
@@ -208,7 +213,7 @@ class MachineController {
   /// embroidery mode; a no-op once the version is known.
   Future<void> _ensureModuleVersion() async {
     if (moduleVersionCode != 0) return;
-    final result = await engine.largeRead(_addrFirmware);
+    final result = await engine.read(_addrFirmware);
     final data = result.binaryData;
     if (!result.success || data == null) return;
     moduleVersionCode = FirmwareInfo.parseVersionCode(_readNullString(data, 0).value);
@@ -720,6 +725,18 @@ class MachineController {
         ? _funcSelectModule
         : _funcSelectPcCard;
     return (await invokeFunction(func)).success;
+  }
+
+  /// Read the identity fields without relying on a full 256-byte N response.
+  Future<Uint8List?> _readFirmwareIdentity() async {
+    final data = Uint8List(96);
+    for (var offset = 0; offset < data.length; offset += 32) {
+      final result = await engine.read(_addrFirmware + offset);
+      final chunk = result.binaryData;
+      if (!result.success || chunk == null || chunk.length < 32) return null;
+      data.setRange(offset, offset + 32, chunk);
+    }
+    return data;
   }
 
   Future<void> _loadPreview(

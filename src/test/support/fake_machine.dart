@@ -20,6 +20,19 @@ class FakeMachine implements Transport {
   /// BIOS version byte reported by the 'V' command (0x0C = v3, 0x0B = v2).
   int biosVersion = 0x0C;
 
+  /// Optional cap for incomplete `N` read responses.
+  int? largeReadByteLimit;
+
+  /// Drop a payload range while preserving the suffix and final O, as observed
+  /// in physical module reads at 19200 baud.
+  ({int start, int end})? largeReadOmittedRange;
+
+  /// Addresses that reject ordinary reads, to exercise failed fallback handling.
+  final Set<int> failedReadAddresses = {};
+
+  /// Offset applied to checksums to model corrupted data in transit.
+  int checksumDelta = 0;
+
   /// Commands received (fully assembled) for assertions in tests.
   final List<String> commandLog = [];
 
@@ -29,6 +42,7 @@ class FakeMachine implements Transport {
   String _cmd = '';
   int _uploadRemaining = 0;
   int _uploadAddr = 0;
+  bool _baudConfirmationPending = false;
 
   static const _hex = '0123456789ABCDEF';
 
@@ -115,6 +129,7 @@ class FakeMachine implements Transport {
     }
     if (s.length == 1 && 'IVKGSXH'.contains(s)) return true;
     if (s == 'YQ') return true;
+    if (s.length == 3 && s[0] == 'J' && _allHex(s, 1)) return true;
     if (s.length == 7 && s[0] == 'r' && _allHex(s, 1)) return true;
     if (s.length == 9 && (s[0] == 'w' || s[0] == 'Z') && _allHex(s, 1)) {
       return true;
@@ -136,6 +151,7 @@ class FakeMachine implements Transport {
     if ((s[0] == 'w' || s[0] == 'Z') && s.length < 9 && _allHex(s, 1)) {
       return true;
     }
+    if (s[0] == 'J' && s.length < 3 && _allHex(s, 1)) return true;
     if (s == 'Y') return true; // waiting for the trailing 'Q'
     return false;
   }
@@ -161,6 +177,15 @@ class FakeMachine implements Transport {
       _emit('BERNINA Electronic AG\rBiosVersion: 1.20\rJuly 97\r');
       return;
     }
+    if (command.startsWith('J') && command.length == 3) {
+      _baudConfirmationPending = true;
+      return;
+    }
+    if (command == 'YQ' && _baudConfirmationPending) {
+      _baudConfirmationPending = false;
+      _emit('O');
+      return;
+    }
     if (command == 'YQ' ||
         command == 'G' ||
         command == 'S' ||
@@ -182,6 +207,10 @@ class FakeMachine implements Transport {
     final type = command[0];
     if (type == 'R' && command.length == 7) {
       final addr = int.parse(command.substring(1), radix: 16);
+      if (failedReadAddresses.contains(addr)) {
+        _emit('Q');
+        return;
+      }
       final bytes = _readBytes(addr, 32);
       // 0xFFFED0 is the function-invocation status register: reads report 0x0002.
       if (addr == 0xFFFED0) {
@@ -191,7 +220,10 @@ class FakeMachine implements Transport {
       _emit('${_hexOf(bytes)}O');
     } else if (type == 'N' && command.length == 7) {
       final addr = int.parse(command.substring(1), radix: 16);
-      _emitBytes(_readBytes(addr, 256));
+      final bytes = _readBytes(addr, largeReadByteLimit ?? 256);
+      final omitted = largeReadOmittedRange;
+      if (omitted != null) bytes.removeRange(omitted.start, omitted.end);
+      _emitBytes(bytes);
       _emit('O');
     } else if (type == 'L') {
       final addr = int.parse(command.substring(1, 7), radix: 16);
@@ -200,7 +232,7 @@ class FakeMachine implements Transport {
       for (var i = 0; i < len; i++) {
         sum += memory[addr + i] ?? 0;
       }
-      _emit('${sum.toRadixString(16).toUpperCase().padLeft(8, '0')}O');
+      _emit('${(sum + checksumDelta).toRadixString(16).toUpperCase().padLeft(8, '0')}O');
     } else if (type == 'W') {
       final addr = int.parse(command.substring(1, 7), radix: 16);
       final body = command.substring(7, command.length - 1);
