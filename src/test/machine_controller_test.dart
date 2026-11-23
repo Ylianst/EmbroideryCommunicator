@@ -111,6 +111,28 @@ void main() {
       expect(info.manufacturer, 'Bernina');
       expect(info.date, 'July 98');
     });
+
+    test('reads module identity when its large-read response is short',
+        () async {
+      putBytes(0x57FF80, [0x00, 0xCE]); // Embroidery module mode.
+      machine.largeReadByteLimit = 145; // Length observed in the hardware log.
+      var addr = putStr(0x200100, 'SRMV03.02');
+      addr = putStr(addr, 'Fritz Gegauf AG');
+      putStr(addr, 'Dec 01');
+
+      final info = await controller.readFirmwareInfo();
+
+      expect(info, isNotNull);
+      expect(info!.mode, SessionMode.embroideryModule);
+      expect(info.version, 'SRMV03.02');
+      expect(info.manufacturer, 'Fritz Gegauf AG');
+      expect(info.date, 'Dec 01');
+      expect(info.pcCardInserted, isFalse);
+      expect(machine.commandLog, contains('R200100'));
+      expect(machine.commandLog, contains('R200120'));
+      expect(machine.commandLog, contains('R200140'));
+      expect(machine.commandLog, isNot(contains('N200100')));
+    });
   });
 
   group('file operations', () {
@@ -130,6 +152,65 @@ void main() {
       expect(files.map((f) => f.fileName), ['File1', 'File2', 'File3']);
       expect(files[2].fileAttributes, 0x86);
       expect(files[2].isMemory, isTrue);
+    });
+
+    test('short N module lists names and complete previews after one N failure', () async {
+      putBytes(0x57FF80, [0x00, 0xCE]);
+      machine.largeReadByteLimit = 145;
+      putStr(0x200100, 'SRMV03.02');
+      putBytes(0x024080, [2]);
+      putBytes(0x0240B9, [0xA4, 0xA4]);
+      putStr(0x0240D5, 'First');
+      putStr(0x0240D5 + 32, 'Second');
+      final preview = List.generate(558, (i) => (i * 13) & 0xFF);
+      putBytes(0x02452E, preview);
+      putBytes(0x02452E + 558, preview.reversed.toList());
+
+      final files = await controller.readEmbroideryFiles(
+        StorageLocation.embroideryModuleMemory,
+        loadPreviews: true,
+      );
+
+      expect(files, isNotNull);
+      expect(files!.map((f) => f.fileName), ['First', 'Second']);
+      expect(files[0].previewImageData, preview);
+      expect(files[1].previewImageData, preview.reversed);
+      expect(machine.commandLog.where((c) => c.startsWith('N')).length, 1);
+    });
+
+    test('healthy module listing and previews keep using N reads', () async {
+      putBytes(0x57FF80, [0x00, 0xCE]);
+      putStr(0x200100, 'SRMV03.02');
+      putBytes(0x024080, [2]);
+      putStr(0x0240D5, 'First');
+      putStr(0x0240D5 + 32, 'Second');
+
+      final files = await controller.readEmbroideryFiles(
+        StorageLocation.embroideryModuleMemory, loadPreviews: true,
+      );
+
+      expect(files, hasLength(2));
+      expect(files!.every((f) => f.previewImageData?.length == 558), isTrue);
+      expect(machine.commandLog, contains('N0240D5'));
+      expect(machine.commandLog, contains('N02452E'));
+      expect(machine.commandLog, isNot(contains('R02452E')));
+    });
+
+    test('short N module downloads a design across block boundaries', () async {
+      putBytes(0x57FF80, [0x00, 0xCE]);
+      machine.largeReadByteLimit = 145;
+      putStr(0x200100, 'SRMV03.02');
+      putBytes(0x024080, [1]);
+      final data = List.generate(300, (i) => (i * 7) & 0xFF);
+      putBytes(0x028F40, [0, 0, 1, 44, 0, 0, 0, 0]);
+      putBytes(0x028F48, data);
+
+      final file = await controller.readEmbroideryFile(
+        StorageLocation.embroideryModuleMemory, 0,
+      );
+
+      expect(file, isNotNull);
+      expect(file!.fileData, data);
     });
 
     test('readEmbroideryFile downloads main data', () async {
